@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VaultVoice Test</title>
+<style>
+body { font-family: -apple-system, sans-serif; padding: 20px; background: #f5f5f5; }
+button { display: block; width: 100%; padding: 16px; margin: 10px 0; font-size: 18px; border-radius: 12px; border: none; background: #007AFF; color: white; }
+#log { background: white; padding: 12px; border-radius: 8px; font-size: 14px; white-space: pre-wrap; min-height: 200px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<h2>VaultVoice Test</h2>
+<button onclick="test1()">1. 서버 연결 테스트</button>
+<button onclick="test2()">2. API 키 테스트</button>
+<button onclick="test3()">3. app.js 로딩 테스트</button>
+<button onclick="test4()">4. 앱 바로 열기</button>
+<div id="log">여기에 결과가 나옵니다...</div>
+<script>
+var log = document.getElementById('log');
+function addLog(msg) { log.textContent += '\n' + msg; }
+
+function test1() {
+  log.textContent = '[테스트1] 서버 연결 중...';
+  fetch('/api/health')
+    .then(function(r) { return r.json(); })
+    .then(function(d) { addLog('성공! vault=' + d.vault); })
+    .catch(function(e) { addLog('실패: ' + e.message); });
+}
+
+function test2() {
+  log.textContent = '[테스트2] API 키 테스트 중...';
+  fetch('/api/tags', { headers: { 'Authorization': 'Bearer vaultvoice-2026' } })
+    .then(function(r) { addLog('응답코드: ' + r.status); return r.json(); })
+    .then(function(d) { addLog('성공! 태그수: ' + (d.tags ? d.tags.length : 'N/A')); })
+    .catch(function(e) { addLog('실패: ' + e.message); });
+}
+
+function test3() {
+  log.textContent = '[테스트3] app.js 로딩 테스트...';
+  fetch('/app.js?v=5')
+    .then(function(r) {
+      addLog('응답코드: ' + r.status);
+      addLog('Content-Type: ' + r.headers.get('content-type'));
+      return r.text();
+    })
+    .then(function(t) {
+      addLog('파일 크기: ' + t.length + '자');
+      addLog('첫 50자: ' + t.substring(0, 50));
+      // 실행 테스트
+      try {
+        new Function(t);
+        addLog('문법 검사: 통과!');
+      } catch(e) {
+        addLog('문법 오류: ' + e.message);
+      }
+    })
+    .catch(function(e) { addLog('로딩 실패: ' + e.message); });
+}
+
+function test4() {
+  log.textContent = '[테스트4] 앱 바로 열기...';
+  localStorage.setItem('vv_apiKey', 'vaultvoice-2026');
+  addLog('키 저장 완료: ' + localStorage.getItem('vv_apiKey'));
+  addLog('이동 중...');
+  location.href = '/?t=' + Date.now();
+}
+</script>
+</body>
+</html>

@@ -10,11 +10,19 @@ const API_KEY = process.env.API_KEY;
 const DAILY_DIR = path.join(VAULT_PATH, '10.Daily Notes');
 
 app.use(express.json());
+
+// No cache for all static files
+app.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Auth middleware
 function auth(req, res, next) {
-  const token = req.headers.authorization?.replace('Bearer ', '');
+  const token = (req.headers.authorization || '').replace('Bearer ', '').trim();
   if (token !== API_KEY) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
