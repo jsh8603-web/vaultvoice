@@ -257,6 +257,36 @@ function doSave() {
 
   var saveBtn = document.getElementById('save-btn');
   saveBtn.disabled = true;
+
+  // 태그가 없고 텍스트가 충분하면 자동 태그 생성 후 저장
+  if (myTags.length === 0 && text.length >= 15 && text !== '(이미지)') {
+    saveBtn.textContent = '태그 생성 중...';
+    api('/ai/summarize', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'auto-tags', content: text })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.success && d.result) {
+          var tags = d.result;
+          if (typeof tags === 'string') { try { tags = JSON.parse(tags); } catch (e) { tags = []; } }
+          if (Array.isArray(tags)) {
+            tags.slice(0, 2).forEach(function (t) {
+              t = t.trim().replace(/^#/, '');
+              if (t) addTag(t);
+            });
+          }
+        }
+      })
+      .catch(function () {})
+      .then(function () { proceedSave(text, saveBtn, fb); });
+    return;
+  }
+
+  proceedSave(text, saveBtn, fb);
+}
+
+function proceedSave(text, saveBtn, fb) {
   saveBtn.textContent = '저장 중...';
 
   // Step 1: upload images if any
@@ -299,7 +329,7 @@ function doSave() {
         fb.className = 'feedback ok';
         fb.style.display = '';
         document.getElementById('memo-text').value = '';
-        myTags = []; renderTags();
+        myTags = []; renderTags(); lastAutoTagText = '';
         pendingImages.forEach(function (img) { URL.revokeObjectURL(img.objectUrl); });
         pendingImages = [];
         renderImagePreviews();
@@ -1107,6 +1137,12 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   });
 
+  // Auto-tag on memo input (debounced 3s)
+  document.getElementById('memo-text').addEventListener('input', function () {
+    if (autoTagTimer) clearTimeout(autoTagTimer);
+    autoTagTimer = setTimeout(triggerAutoTag, 3000);
+  });
+
   // Newline button
   document.getElementById('newline-btn').addEventListener('click', function () {
     var ta = document.getElementById('memo-text');
@@ -1182,6 +1218,41 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('auth').style.display = '';
   }
 });
+
+// ============================================================
+// Auto-tag generation
+// ============================================================
+var autoTagTimer = null;
+var lastAutoTagText = '';
+var autoTagInFlight = false;
+
+function triggerAutoTag() {
+  var text = document.getElementById('memo-text').value.trim();
+  if (text.length < 15 || text === lastAutoTagText || autoTagInFlight) return;
+
+  autoTagInFlight = true;
+  lastAutoTagText = text;
+
+  api('/ai/summarize', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'auto-tags', content: text })
+  })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d.success || !d.result) return;
+      var tags = d.result;
+      if (typeof tags === 'string') {
+        try { tags = JSON.parse(tags); } catch (e) { return; }
+      }
+      if (!Array.isArray(tags)) return;
+      tags.slice(0, 2).forEach(function (t) {
+        t = t.trim().replace(/^#/, '');
+        if (t) addTag(t);
+      });
+    })
+    .catch(function () {})
+    .then(function () { autoTagInFlight = false; });
+}
 
 // ============================================================
 // Full-text Search

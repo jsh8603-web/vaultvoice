@@ -359,6 +359,8 @@ app.post('/api/ai/summarize', async (req, res) => {
     prompt = `다음은 ${date || '오늘'}의 일일노트 내용입니다. 3~5문장으로 한국어로 핵심을 요약해주세요. 마크다운 없이 일반 텍스트로 답변하세요.\n\n${content}`;
   } else if (action === 'suggest-tags') {
     prompt = `다음 일일노트 내용을 분석해서 적절한 태그를 5~10개 추천해주세요. JSON 배열 형태로만 답변하세요 (예: ["태그1", "태그2"]). 설명 없이 JSON만 출력하세요.\n\n${content}`;
+  } else if (action === 'auto-tags') {
+    prompt = `다음 메모의 주제/카테고리를 나타내는 태그를 정확히 1~2개 추천하세요. 규칙: 1) 메모의 핵심 주제를 대표하는 명사형 태그 2) 구체적이고 의미있는 단어 (예: 회의, 논문, 진료, 코딩, 운동) 3) "작성", "수정" 같은 동작어 금지. JSON 배열로만 답변. 예: ["회의", "AI프로젝트"]\n\n${content}`;
   } else if (action === 'categorize') {
     prompt = `다음 일일노트 내용을 주제별로 분류해주세요. 각 주제에 관련 메모를 그룹화하고 한국어로 간결하게 정리해주세요. 마크다운 없이 일반 텍스트로 답변하세요.\n\n${content}`;
   } else {
@@ -392,7 +394,7 @@ app.post('/api/ai/summarize', async (req, res) => {
 
     let result = text.trim();
     // For suggest-tags, try to parse as JSON
-    if (action === 'suggest-tags') {
+    if (action === 'suggest-tags' || action === 'auto-tags') {
       try {
         // Extract JSON array from response if wrapped in text
         const jsonMatch = result.match(/\[[\s\S]*\]/);
