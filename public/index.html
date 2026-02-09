@@ -129,7 +129,20 @@
 
     <!-- 기록 -->
     <section id="p-hist" class="tab-panel">
-      <input type="search" id="hist-search" class="input" placeholder="검색..." style="margin-bottom:12px">
+      <div class="search-wrap">
+        <input type="text" id="hist-search" class="input search-input" placeholder="검색어 입력 (🎙️ 키보드 마이크)" autocomplete="off" autocorrect="on" spellcheck="false">
+        <button id="search-mic-btn" class="search-mic-btn" style="display:none" title="음성 검색">🎤</button>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:6px">
+        <button id="search-btn" class="search-go-btn" style="flex:1">검색</button>
+        <button id="search-ai-btn" class="search-go-btn" style="flex:1;background:var(--green)">AI 검색</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding-left:4px">
+        <label style="font-size:13px;color:var(--text2);display:flex;align-items:center;gap:4px">
+          <input type="checkbox" id="search-all-vault"> 전체 볼트 검색
+        </label>
+      </div>
+      <div id="search-results" style="display:none;margin-bottom:12px"></div>
       <div id="hist-list"><div class="empty">로딩 중...</div></div>
       <div id="hist-overlay" class="overlay" style="display:none">
         <button class="close-btn" id="hist-close">&times;</button>

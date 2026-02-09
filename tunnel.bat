@@ -5,8 +5,10 @@ echo  ============================
 echo   VaultVoice Cloudflare Tunnel
 echo  ============================
 echo.
-echo  아래 나오는 https://....trycloudflare.com 주소를
-echo  아이폰 Safari에서 접속하세요!
+echo   https://vault.wwwmoksu.com
 echo.
-"C:\Program Files (x86)\cloudflared\cloudflared.exe" tunnel --url http://localhost:9097
+echo   이 주소는 고정입니다.
+echo   아이폰 홈 화면에 추가하면 항상 같은 주소로 접속됩니다.
+echo.
+npx cloudflared tunnel run vaultvoice
 pause

@@ -433,11 +433,7 @@ function loadHistory() {
 }
 
 function filterHist() {
-  var q = document.getElementById('hist-search').value.toLowerCase();
-  var items = document.querySelectorAll('.hist-item');
-  for (var i = 0; i < items.length; i++) {
-    items[i].style.display = items[i].textContent.toLowerCase().indexOf(q) >= 0 ? '' : 'none';
-  }
+  // Now handled by doSearch()
 }
 
 function openPreview(date) {
@@ -501,10 +497,106 @@ function renderMd(md) {
 }
 
 // ============================================================
-// Phase 1: Voice Recognition
+// Phase 1: Voice Recognition (Enhanced v2)
 // ============================================================
+
+// 한국어 음성 인식 후처리 교정 사전
+var voiceCorrectionDict = {
+  // Obsidian/VaultVoice 관련
+  '옵시 디언': '옵시디안',
+  '옵시 티언': '옵시디안',
+  '옵시디 안': '옵시디안',
+  '압시디안': '옵시디안',
+  '옵시디앙': '옵시디안',
+  '볼트 보이스': '볼트보이스',
+  '볼트 voice': '볼트보이스',
+  '폴트 보이스': '볼트보이스',
+  '보르트': '볼트',
+  
+  // 일반적인 오인식
+  '하루 일과': '하루일과',
+  '투 두': '투두',
+  '투두 리스트': '투두리스트',
+  '체크 리스트': '체크리스트',
+  '메모리': '메모',  // "메모해" → "메모리해" 오인식
+  
+  // 숫자/시간 관련
+  '열 시': '10시',
+  '열한 시': '11시',
+  '열두 시': '12시',
+  '한 시': '1시',
+  '두 시': '2시',
+  '세 시': '3시',
+  '네 시': '4시',
+  '다섯 시': '5시',
+  '여섯 시': '6시',
+  '일곱 시': '7시',
+  '여덟 시': '8시',
+  '아홉 시': '9시',
+  
+  // 약어/영어 발음
+  'ㅇㅋ': 'OK',
+  '오케이': 'OK',
+  '에이 아이': 'AI',
+  '피 티 에이': 'PWA',
+  
+  // 문장 부호 관련
+  '마침표': '.',
+  '쉼표': ',',
+  '물음표': '?',
+  '느낌표': '!',
+  '줄 바꿈': '\n',
+  '엔터': '\n',
+  '새 줄': '\n'
+};
+
+// 설정 (localStorage에서 불러오기)
+var voiceSettings = {
+  restartDelay: parseInt(localStorage.getItem('vv_voice_restartDelay')) || 300,
+  noSpeechDelay: parseInt(localStorage.getItem('vv_voice_noSpeechDelay')) || 1000,
+  minConfidence: parseFloat(localStorage.getItem('vv_voice_minConfidence')) || 0.3,
+  enableCorrection: localStorage.getItem('vv_voice_enableCorrection') !== 'false'
+};
+
+// 후처리 교정 함수
+function correctVoiceText(text) {
+  if (!voiceSettings.enableCorrection) return text;
+  
+  var corrected = text;
+  for (var wrong in voiceCorrectionDict) {
+    if (voiceCorrectionDict.hasOwnProperty(wrong)) {
+      var regex = new RegExp(wrong, 'gi');
+      corrected = corrected.replace(regex, voiceCorrectionDict[wrong]);
+    }
+  }
+  return corrected;
+}
+
+// 사용자 정의 교정 규칙 추가
+function addCorrectionRule(wrong, correct) {
+  voiceCorrectionDict[wrong] = correct;
+  // localStorage에 저장
+  var custom = JSON.parse(localStorage.getItem('vv_voice_customDict') || '{}');
+  custom[wrong] = correct;
+  localStorage.setItem('vv_voice_customDict', JSON.stringify(custom));
+}
+
+// 사용자 정의 규칙 로드
+(function loadCustomDict() {
+  try {
+    var custom = JSON.parse(localStorage.getItem('vv_voice_customDict') || '{}');
+    for (var k in custom) {
+      if (custom.hasOwnProperty(k)) {
+        voiceCorrectionDict[k] = custom[k];
+      }
+    }
+  } catch (e) {}
+})();
+
 function initVoiceRecognition() {
   var micBtn = document.getElementById('mic-btn');
+  var textarea = document.getElementById('memo-text');
+  
   // Check if Web Speech API is available (Chrome, not iOS Safari)
   var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) {
@@ -518,58 +610,234 @@ function initVoiceRecognition() {
   recognition.lang = 'ko-KR';
   recognition.continuous = true;
   recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+  
   var isRecording = false;
-  var finalTranscript = '';
+  var baseText = '';
+  var accumulatedFinal = '';
+  var shouldRestart = false;
+  var recordingStartTime = 0;
+  
+  // 개선된 상태 표시 UI
+  var statusEl = document.getElementById('voice-status');
+  if (!statusEl) {
+    statusEl = document.createElement('div');
+    statusEl.id = 'voice-status';
+    document.body.appendChild(statusEl);
+  }
+  
+  // 스타일 동적 추가
+  if (!document.getElementById('voice-status-style')) {
+    var style = document.createElement('style');
+    style.id = 'voice-status-style';
+    style.textContent = `
+      #voice-status {
+        position: fixed;
+        top: 70px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 10px 20px;
+        border-radius: 25px;
+        font-size: 14px;
+        font-weight: 500;
+        z-index: 9999;
+        display: none;
+        max-width: 85%;
+        text-align: center;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        backdrop-filter: blur(10px);
+        transition: all 0.3s ease;
+        animation: voiceStatusSlide 0.3s ease;
+      }
+      @keyframes voiceStatusSlide {
+        from { opacity: 0; transform: translateX(-50%) translateY(-10px); }
+        to { opacity: 1; transform: translateX(-50%) translateY(0); }
+      }
+      #voice-status.listening {
+        background: linear-gradient(135deg, #2196F3 0%, #1976D2 100%);
+        color: white;
+      }
+      #voice-status.listening::before {
+        content: '';
+        position: absolute;
+        top: -3px; left: -3px; right: -3px; bottom: -3px;
+        border-radius: 28px;
+        background: linear-gradient(135deg, #2196F3, #64B5F6, #2196F3);
+        z-index: -1;
+        animation: voicePulse 1.5s ease-in-out infinite;
+      }
+      @keyframes voicePulse {
+        0%, 100% { opacity: 0.5; transform: scale(1); }
+        50% { opacity: 0.8; transform: scale(1.02); }
+      }
+      #voice-status.success {
+        background: linear-gradient(135deg, #4CAF50 0%, #388E3C 100%);
+        color: white;
+      }
+      #voice-status.error {
+        background: linear-gradient(135deg, #f44336 0%, #d32f2f 100%);
+        color: white;
+      }
+      #voice-status.warning {
+        background: linear-gradient(135deg, #FF9800 0%, #F57C00 100%);
+        color: white;
+      }
+      #voice-status .duration {
+        font-size: 11px;
+        opacity: 0.8;
+        margin-left: 8px;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function showStatus(msg, type, showDuration) {
+    statusEl.textContent = msg;
+    statusEl.className = type || 'listening';
+    statusEl.style.display = '';
+    
+    if (showDuration && recordingStartTime) {
+      var elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+      var durSpan = document.createElement('span');
+      durSpan.className = 'duration';
+      durSpan.textContent = elapsed + '초';
+      statusEl.appendChild(durSpan);
+    }
+  }
+  
+  function hideStatus() {
+    statusEl.style.display = 'none';
+  }
 
   micBtn.addEventListener('click', function () {
     if (isRecording) {
+      shouldRestart = false;
       recognition.stop();
       return;
     }
-    finalTranscript = '';
+    baseText = textarea.value;
+    accumulatedFinal = '';
+    shouldRestart = true;
+    recordingStartTime = Date.now();
     try {
       recognition.start();
-    } catch (e) {
-      // Already started
-    }
+    } catch (e) {}
   });
 
   recognition.onstart = function () {
     isRecording = true;
     micBtn.classList.add('recording');
+    showStatus('🎤 듣는 중...', 'listening', true);
   };
 
   recognition.onresult = function (e) {
-    var interim = '';
+    var interimTranscript = '';
+    var newFinal = '';
+    
     for (var i = e.resultIndex; i < e.results.length; i++) {
+      var transcript = e.results[i][0].transcript;
+      var confidence = e.results[i][0].confidence;
+      
       if (e.results[i].isFinal) {
-        finalTranscript += e.results[i][0].transcript;
+        if (confidence < voiceSettings.minConfidence) {
+          console.log('Low confidence ignored:', transcript, confidence);
+          continue;
+        }
+        // 후처리 교정 적용
+        newFinal += correctVoiceText(transcript);
       } else {
-        interim += e.results[i][0].transcript;
+        interimTranscript += transcript;
       }
     }
-    var textarea = document.getElementById('memo-text');
-    var current = textarea.value;
-    // Append final transcript
-    if (finalTranscript) {
-      var before = current.endsWith('\n') || current === '' ? current : current + ' ';
-      textarea.value = before + finalTranscript;
-      finalTranscript = '';
+    
+    if (newFinal) {
+      accumulatedFinal += newFinal;
     }
+    
+    var separator = (baseText && !baseText.endsWith('\n') && !baseText.endsWith(' ')) ? ' ' : '';
+    var displayText = baseText + separator + accumulatedFinal;
+    
+    if (interimTranscript) {
+      textarea.value = displayText + interimTranscript;
+      showStatus('🎤 ' + interimTranscript, 'listening', true);
+    } else if (accumulatedFinal) {
+      textarea.value = displayText;
+      showStatus('✓ ' + accumulatedFinal.slice(-40), 'success', true);
+    }
+    
+    textarea.scrollTop = textarea.scrollHeight;
   };
 
   recognition.onend = function () {
     isRecording = false;
     micBtn.classList.remove('recording');
+    
+    if (accumulatedFinal) {
+      var separator = (baseText && !baseText.endsWith('\n') && !baseText.endsWith(' ')) ? ' ' : '';
+      textarea.value = baseText + separator + accumulatedFinal;
+    }
+    
+    if (shouldRestart && accumulatedFinal) {
+      setTimeout(function () {
+        if (shouldRestart) {
+          baseText = textarea.value;
+          accumulatedFinal = '';
+          try {
+            recognition.start();
+          } catch (e) {
+            console.log('Cannot restart:', e);
+            shouldRestart = false;
+            hideStatus();
+          }
+        }
+      }, voiceSettings.restartDelay);
+    } else {
+      setTimeout(hideStatus, 1500);
+    }
   };
 
   recognition.onerror = function (e) {
+    console.error('Speech error:', e.error);
+    
+    if (e.error === 'no-speech') {
+      showStatus('🔇 말씀해 주세요...', 'warning');
+      if (shouldRestart) {
+        setTimeout(function () {
+          if (shouldRestart) {
+            try { recognition.start(); } catch (err) {
+              isRecording = false;
+              micBtn.classList.remove('recording');
+              shouldRestart = false;
+              hideStatus();
+            }
+          }
+        }, voiceSettings.noSpeechDelay);
+      }
+      return;
+    }
+    
+    if (e.error === 'aborted') {
+      isRecording = false;
+      micBtn.classList.remove('recording');
+      shouldRestart = false;
+      hideStatus();
+      return;
+    }
+    
+    var errorMsg = {
+      'network': '⚠️ 네트워크 오류',
+      'not-allowed': '⚠️ 마이크 권한 필요',
+      'audio-capture': '⚠️ 마이크 사용 불가'
+    }[e.error] || ('⚠️ 오류: ' + e.error);
+    
+    showStatus(errorMsg, 'error');
     isRecording = false;
     micBtn.classList.remove('recording');
-    if (e.error !== 'aborted') {
-      console.error('Speech recognition error:', e.error);
-    }
+    shouldRestart = false;
+    setTimeout(hideStatus, 3000);
   };
+  
+  console.log('Voice Recognition v2 initialized with settings:', voiceSettings);
 }
 
 // ============================================================
@@ -862,9 +1130,23 @@ document.addEventListener('DOMContentLoaded', function () {
     e.target.value = '';
   });
 
-  // History search
-  document.getElementById('hist-search').addEventListener('input', filterHist);
+  // History search — full text + AI
+  document.getElementById('search-btn').addEventListener('click', doSearch);
+  document.getElementById('search-ai-btn').addEventListener('click', doAISearch);
+  var searchInput = document.getElementById('hist-search');
+  searchInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); doSearch(); }
+  });
+  // iOS 키보드 마이크 음성 입력 후 자동 검색 (1.5초 타이핑 멈추면)
+  var searchTimer = null;
+  searchInput.addEventListener('input', function () {
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(function () {
+      if (searchInput.value.trim()) doSearch();
+    }, 1500);
+  });
   document.getElementById('hist-close').addEventListener('click', closePreview);
+  initSearchMic();
 
   // Settings
   var defSec = document.getElementById('def-sec');
@@ -900,6 +1182,171 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('auth').style.display = '';
   }
 });
+
+// ============================================================
+// Full-text Search
+// ============================================================
+function doSearch() {
+  var q = document.getElementById('hist-search').value.trim();
+  var resultsEl = document.getElementById('search-results');
+  var histList = document.getElementById('hist-list');
+
+  if (!q) {
+    resultsEl.style.display = 'none';
+    histList.style.display = '';
+    loadHistory();
+    return;
+  }
+
+  resultsEl.style.display = '';
+  resultsEl.innerHTML = '<div class="empty" style="padding:16px">검색 중...</div>';
+  histList.style.display = 'none';
+
+  var scope = document.getElementById('search-all-vault').checked ? 'all' : 'daily';
+  api('/search?q=' + encodeURIComponent(q) + '&scope=' + scope)
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d.results || d.results.length === 0) {
+        resultsEl.innerHTML = '<div class="empty" style="padding:20px">"' + esc(q) + '" 검색 결과 없음</div>';
+        return;
+      }
+
+      var html = '<div class="search-summary">' + d.total + '개 노트에서 발견</div>';
+      html += d.results.map(function (r) {
+        var matchHtml = r.matches.map(function (m) {
+          var highlighted = esc(m.text).replace(
+            new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi'),
+            '<mark>$1</mark>'
+          );
+          return '<div class="search-result-match">' + highlighted + '</div>';
+        }).join('');
+        var pathHtml = r.path ? '<div style="font-size:11px;color:var(--text2);margin-top:2px">' + esc(r.path) + '</div>' : '';
+        return '<div class="search-result-item" data-date="' + r.date + '">' +
+          '<div class="search-result-date">' + esc(r.date) + '</div>' +
+          pathHtml + matchHtml + '</div>';
+      }).join('');
+
+      resultsEl.innerHTML = html;
+      resultsEl.querySelectorAll('.search-result-item').forEach(function (item) {
+        item.addEventListener('click', function () {
+          openPreview(item.getAttribute('data-date'));
+        });
+      });
+    })
+    .catch(function (e) {
+      resultsEl.innerHTML = '<div class="empty" style="padding:20px">검색 실패: ' + esc(e.message) + '</div>';
+    });
+}
+
+function doAISearch() {
+  var q = document.getElementById('hist-search').value.trim();
+  var resultsEl = document.getElementById('search-results');
+  var histList = document.getElementById('hist-list');
+  var aiBtn = document.getElementById('search-ai-btn');
+
+  if (!q) return;
+
+  resultsEl.style.display = '';
+  resultsEl.innerHTML = '<div class="empty" style="padding:16px">AI가 관련 키워드 확장 중...</div>';
+  histList.style.display = 'none';
+  aiBtn.disabled = true;
+  aiBtn.textContent = 'AI 검색 중...';
+
+  var scope = document.getElementById('search-all-vault').checked ? 'all' : 'daily';
+  api('/search/ai?q=' + encodeURIComponent(q) + '&scope=' + scope)
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (d.error) {
+        resultsEl.innerHTML = '<div class="empty" style="padding:20px">' + esc(d.error) + '</div>';
+        return;
+      }
+      if (!d.results || d.results.length === 0) {
+        resultsEl.innerHTML = '<div class="empty" style="padding:20px">"' + esc(q) + '" AI 검색 결과 없음</div>';
+        return;
+      }
+
+      var keywordsHtml = '';
+      if (d.keywords && d.keywords.length > 1) {
+        keywordsHtml = '<div style="margin-bottom:8px;font-size:12px;color:var(--text2)">확장 키워드: ' +
+          d.keywords.slice(0, 15).map(function (k) {
+            return '<span style="background:rgba(0,122,255,0.1);padding:2px 6px;border-radius:8px;margin:2px">' + esc(k) + '</span>';
+          }).join(' ') + '</div>';
+      }
+
+      var html = keywordsHtml + '<div class="search-summary">' + d.total + '개 노트에서 발견</div>';
+      html += d.results.map(function (r) {
+        var matchHtml = r.matches.map(function (m) {
+          var text = esc(m.text);
+          // Highlight all matched keywords
+          (m.keywords || []).forEach(function (k) {
+            var re = new RegExp('(' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+            text = text.replace(re, '<mark>$1</mark>');
+          });
+          return '<div class="search-result-match">' + text + '</div>';
+        }).join('');
+        var pathHtml2 = r.path ? '<div style="font-size:11px;color:var(--text2);margin-top:2px">' + esc(r.path) + '</div>' : '';
+        return '<div class="search-result-item" data-date="' + r.date + '">' +
+          '<div class="search-result-date">' + esc(r.date) + '</div>' +
+          pathHtml2 + matchHtml + '</div>';
+      }).join('');
+
+      resultsEl.innerHTML = html;
+      resultsEl.querySelectorAll('.search-result-item').forEach(function (item) {
+        item.addEventListener('click', function () {
+          openPreview(item.getAttribute('data-date'));
+        });
+      });
+    })
+    .catch(function (e) {
+      resultsEl.innerHTML = '<div class="empty" style="padding:20px">AI 검색 실패: ' + esc(e.message) + '</div>';
+    })
+    .then(function () {
+      aiBtn.disabled = false;
+      aiBtn.textContent = 'AI 검색';
+    });
+}
+
+function initSearchMic() {
+  var micBtn = document.getElementById('search-mic-btn');
+  var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    micBtn.style.display = 'none';
+    return;
+  }
+
+  micBtn.style.display = 'flex';
+  var recognition = new SpeechRecognition();
+  recognition.lang = 'ko-KR';
+  recognition.continuous = false;
+  recognition.interimResults = false;
+  var isRecording = false;
+
+  micBtn.addEventListener('click', function () {
+    if (isRecording) { recognition.stop(); return; }
+    try { recognition.start(); } catch (e) { }
+  });
+
+  recognition.onstart = function () {
+    isRecording = true;
+    micBtn.classList.add('recording');
+  };
+
+  recognition.onresult = function (e) {
+    var text = e.results[0][0].transcript;
+    document.getElementById('hist-search').value = text;
+    doSearch();
+  };
+
+  recognition.onend = function () {
+    isRecording = false;
+    micBtn.classList.remove('recording');
+  };
+
+  recognition.onerror = function () {
+    isRecording = false;
+    micBtn.classList.remove('recording');
+  };
+}
 
 // ============================================================
 // QR Code (설정탭 진입 시 현재 URL 표시)

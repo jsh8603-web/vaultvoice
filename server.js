@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ override: true });
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
@@ -113,7 +113,13 @@ app.get('/api/test', async (req, res) => {
           })
         }
       );
-      results.gemini = { ok: testRes.ok, status: testRes.status };
+      if (!testRes.ok) {
+        const errBody = await testRes.text();
+        console.error('Gemini test error:', errBody);
+        results.gemini = { ok: false, status: testRes.status, error: errBody.substring(0, 200) };
+      } else {
+        results.gemini = { ok: true, status: testRes.status };
+      }
     } catch (e) {
       results.gemini = { ok: false, error: e.message };
     }
@@ -402,6 +408,167 @@ app.post('/api/ai/summarize', async (req, res) => {
   } catch (e) {
     console.error('Gemini proxy error:', e);
     res.status(500).json({ error: 'AI request failed: ' + e.message });
+  }
+});
+
+// ============================================================
+// Full-text search across entire vault
+// ============================================================
+function getAllMdFiles(dir, fileList) {
+  fileList = fileList || [];
+  const items = fs.readdirSync(dir);
+  for (const item of items) {
+    // Skip hidden folders, node_modules, .git, etc.
+    if (item.startsWith('.') || item === 'node_modules') continue;
+    const fullPath = path.join(dir, item);
+    try {
+      const stat = fs.statSync(fullPath);
+      if (stat.isDirectory()) {
+        getAllMdFiles(fullPath, fileList);
+      } else if (item.endsWith('.md')) {
+        fileList.push(fullPath);
+      }
+    } catch (e) { /* skip inaccessible */ }
+  }
+  return fileList;
+}
+
+app.get('/api/search', (req, res) => {
+  const q = (req.query.q || '').trim().toLowerCase();
+  const scope = req.query.scope || 'daily'; // 'daily' or 'all'
+  if (!q) return res.status(400).json({ error: 'Query required' });
+
+  let allFiles;
+  if (scope === 'all') {
+    allFiles = getAllMdFiles(VAULT_PATH);
+  } else {
+    // Daily notes only
+    if (!fs.existsSync(DAILY_DIR)) return res.json({ results: [], query: q, total: 0 });
+    allFiles = fs.readdirSync(DAILY_DIR)
+      .filter(f => f.endsWith('.md'))
+      .map(f => path.join(DAILY_DIR, f));
+  }
+  const results = [];
+  const MAX_RESULTS = 50;
+
+  for (const filePath of allFiles) {
+    if (results.length >= MAX_RESULTS) break;
+    let raw;
+    try { raw = fs.readFileSync(filePath, 'utf-8'); } catch (e) { continue; }
+
+    if (raw.toLowerCase().indexOf(q) === -1) continue;
+
+    const lines = raw.split('\n');
+    const matches = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].toLowerCase().indexOf(q) >= 0) {
+        matches.push({ line: i, text: lines[i].trim() });
+        if (matches.length >= 3) break;
+      }
+    }
+
+    if (matches.length > 0) {
+      // Show relative path from vault root
+      const relPath = path.relative(VAULT_PATH, filePath).replace(/\\/g, '/');
+      const name = path.basename(filePath, '.md');
+      results.push({ date: name, path: relPath, matches });
+    }
+  }
+
+  res.json({ results, query: q, total: results.length });
+});
+
+// ============================================================
+// AI-powered semantic search
+// ============================================================
+app.get('/api/search/ai', async (req, res) => {
+  const q = (req.query.q || '').trim();
+  if (!q) return res.status(400).json({ error: 'Query required' });
+
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_key_here') {
+    return res.status(503).json({ error: 'Gemini API key not configured' });
+  }
+
+  if (!fs.existsSync(DAILY_DIR)) {
+    return res.json({ results: [], query: q });
+  }
+
+  // Step 1: Ask Gemini to expand search keywords
+  try {
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: `사용자가 일일노트에서 "${q}"를 검색하려 합니다. 이 의도와 관련된 한국어 검색 키워드를 10~20개 생성하세요. 유의어, 관련어, 줄임말, 비슷한 표현을 포함하세요. JSON 배열로만 답변하세요. 예: ["키워드1", "키워드2"]` }] }],
+          generationConfig: { temperature: 0.3, maxOutputTokens: 256 }
+        })
+      }
+    );
+
+    let keywords = [q];
+    if (geminiRes.ok) {
+      const data = await geminiRes.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      try {
+        const jsonMatch = text.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          keywords = [...new Set([q, ...parsed.map(k => k.toLowerCase())])];
+        }
+      } catch (e) { /* use original query */ }
+    }
+
+    // Step 2: Search with expanded keywords
+    const scope = req.query.scope || 'daily';
+    let allFiles;
+    if (scope === 'all') {
+      allFiles = getAllMdFiles(VAULT_PATH);
+    } else {
+      if (!fs.existsSync(DAILY_DIR)) return res.json({ results: [], query: q, keywords, total: 0 });
+      allFiles = fs.readdirSync(DAILY_DIR)
+        .filter(f => f.endsWith('.md'))
+        .map(f => path.join(DAILY_DIR, f));
+    }
+    const results = [];
+    const MAX_RESULTS = 50;
+
+    for (const filePath of allFiles) {
+      if (results.length >= MAX_RESULTS) break;
+      let raw;
+      try { raw = fs.readFileSync(filePath, 'utf-8'); } catch (e) { continue; }
+      const lower = raw.toLowerCase();
+
+      // Check if any keyword matches
+      const matchedKeywords = keywords.filter(k => lower.indexOf(k.toLowerCase()) >= 0);
+      if (matchedKeywords.length === 0) continue;
+
+      const lines = raw.split('\n');
+      const matches = [];
+      for (let i = 0; i < lines.length; i++) {
+        const lineLower = lines[i].toLowerCase();
+        const lineMatches = matchedKeywords.filter(k => lineLower.indexOf(k.toLowerCase()) >= 0);
+        if (lineMatches.length > 0) {
+          matches.push({ line: i, text: lines[i].trim(), keywords: lineMatches });
+          if (matches.length >= 5) break;
+        }
+      }
+
+      if (matches.length > 0) {
+        const relPath = path.relative(VAULT_PATH, filePath).replace(/\\/g, '/');
+        const name = path.basename(filePath, '.md');
+        results.push({ date: name, path: relPath, matches, relevance: matchedKeywords.length });
+      }
+    }
+
+    // Sort by relevance (more keyword matches = more relevant)
+    results.sort((a, b) => b.relevance - a.relevance);
+
+    res.json({ results, query: q, keywords, total: results.length });
+  } catch (e) {
+    console.error('AI search error:', e);
+    res.status(500).json({ error: 'AI search failed: ' + e.message });
   }
 });
 
