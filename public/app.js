@@ -100,6 +100,7 @@ function showApp() {
   loadTags();
   initVoiceRecognition();
   initReminders();
+  initJarvis();
 }
 
 // ============================================================
@@ -203,18 +204,456 @@ function removeImage(idx) {
   }
 }
 
+// ============================================================
+// Phase 1: Smart Scan (Image Analysis)
+// ============================================================
 function renderImagePreviews() {
   var el = document.getElementById('image-preview');
   el.innerHTML = pendingImages.map(function (img, idx) {
     return '<div class="image-thumb">' +
       '<img src="' + img.objectUrl + '" alt="">' +
       '<button class="image-thumb-remove" data-idx="' + idx + '">&times;</button>' +
+      // AI Scan Button
+      '<button class="image-scan-btn" data-idx="' + idx + '" title="AI 분석">🧠</button>' +
       '</div>';
   }).join('');
+  
   el.querySelectorAll('.image-thumb-remove').forEach(function (btn) {
     btn.addEventListener('click', function () { removeImage(parseInt(btn.getAttribute('data-idx'))); });
   });
+
+  // Bind Scan Buttons
+  el.querySelectorAll('.image-scan-btn').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();
+      doScanImage(parseInt(btn.getAttribute('data-idx')));
+    });
+  });
 }
+
+function doScanImage(idx) {
+  var img = pendingImages[idx];
+  if (!img) return;
+
+  var scanOverlay = document.getElementById('scan-overlay');
+  var scanContent = document.getElementById('scan-content');
+  var applyBtn = document.getElementById('scan-apply');
+  var cancelBtn = document.getElementById('scan-cancel');
+
+  scanOverlay.style.display = 'flex';
+  scanContent.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text2)">이미지 업로드 및 분석 중...<br>잠시만 기다려주세요.</div>';
+  applyBtn.disabled = true;
+
+  // 1. Upload first if not uploaded
+  var uploadChain = img.serverId ? Promise.resolve(img.serverId) : uploadImages().then(function(ids) { return img.serverId; });
+
+  uploadChain.then(function(filename) {
+    if(!filename) throw new Error("이미지 업로드 실패");
+    
+    // 2. Request Analysis
+    return api('/ai/analyze-image', {
+      method: 'POST',
+      body: JSON.stringify({ filename: filename })
+    });
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    if(!d.success) throw new Error(d.error || "분석 실패");
+    
+    // 3. Render Result
+    var res = d.result;
+    var html = '<div style="margin-bottom:12px;color:var(--blue);font-weight:600">[' + esc(res.category) + ']</div>';
+    html += '<div style="font-size:15px;line-height:1.6;margin-bottom:12px">' + esc(res.summary) + '</div>';
+    
+    // Data Table
+    if(res.data && Object.keys(res.data).length > 0) {
+      html += '<div style="background:var(--bg);padding:12px;border-radius:8px;font-size:13px;margin-bottom:12px">';
+      for(var k in res.data) {
+        html += '<div style="display:flex;justify-content:space-between;margin-bottom:4px">' +
+          '<span style="color:var(--text2)">' + esc(k) + '</span>' +
+          '<span style="font-weight:500">' + esc(res.data[k]) + '</span></div>';
+      }
+      html += '</div>';
+    }
+    
+    // Raw Text Toggle
+    html += '<details style="font-size:12px;color:var(--text2)"><summary style="cursor:pointer;padding:4px 0">전체 텍스트 보기</summary><div style="white-space:pre-wrap;padding:8px;background:var(--bg);border-radius:4px">' + esc(res.text) + '</div></details>';
+
+    scanContent.innerHTML = html;
+    applyBtn.disabled = false;
+    
+    // Store result for apply
+    scanOverlay._scanResult = res;
+  })
+  .catch(function(e) {
+    scanContent.innerHTML = '<div style="color:var(--red);text-align:center;padding:20px">오류: ' + esc(e.message) + '</div>';
+  });
+
+  // Events
+  cancelBtn.onclick = function() { scanOverlay.style.display = 'none'; };
+  document.getElementById('scan-close').onclick = function() { scanOverlay.style.display = 'none'; };
+  
+  applyBtn.onclick = function() {
+    var res = scanOverlay._scanResult;
+    if(!res) return;
+    
+    var memoText = document.getElementById('memo-text');
+    var append = '';
+    
+    // Format: [Category] Summary
+    // - key: val
+    
+    append += `[${res.category}] ${res.summary}\n`;
+    if(res.data) {
+      for(var k in res.data) {
+        append += `- ${k}: ${res.data[k]}\n`;
+      }
+    }
+    
+    if(memoText.value) append = '\n\n' + append;
+    memoText.value += append;
+    
+    // Auto add tag based on category
+    if(res.category) addTag(res.category.replace(/\s/g, ''));
+    
+    scanOverlay.style.display = 'none';
+    
+    // Scroll to bottom
+    memoText.scrollTop = memoText.scrollHeight;
+  };
+}
+
+// Add CSS for scan button
+var style = document.createElement('style');
+style.textContent = `
+.image-scan-btn {
+  position: absolute; bottom: 2px; right: 2px;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: var(--blue); color: #fff; border: none;
+  font-size: 14px; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+  z-index: 5;
+}
+.image-thumb-remove {
+  top: 2px; right: 2px; bottom: auto;
+  background: rgba(0,0,0,0.6); width: 20px; height: 20px;
+}
+`;
+document.head.appendChild(style);
+
+// ============================================================
+// Phase 2: Jarvis (Voice Assistant) — Refactored
+// ============================================================
+
+// ---- Jarvis State ----
+var jarvisChatHistory = []; // { role: 'user'|'model', text: string }
+var jarvisIsSending = false;
+var jarvisTTSActive = false;
+var jarvisRecog = null;
+
+// Jarvis Floating Button (created dynamically)
+var jarvisBtn = document.createElement('button');
+jarvisBtn.id = 'jarvis-btn';
+jarvisBtn.className = 'jarvis-fab';
+jarvisBtn.innerHTML = '🤖';
+jarvisBtn.onclick = openJarvis;
+document.body.appendChild(jarvisBtn);
+
+// Jarvis DOM refs (deferred until DOMContentLoaded via init)
+var jarvisOverlay, jarvisInput, jarvisMic, jarvisSend, jarvisChat, jarvisReset, jarvisStatus;
+
+function initJarvis() {
+  jarvisOverlay = document.getElementById('jarvis-overlay');
+  jarvisInput = document.getElementById('jarvis-input');
+  jarvisMic = document.getElementById('jarvis-mic');
+  jarvisSend = document.getElementById('jarvis-send');
+  jarvisChat = document.getElementById('jarvis-chat');
+  jarvisReset = document.getElementById('jarvis-reset');
+  jarvisStatus = document.getElementById('jarvis-status');
+
+  if (!jarvisOverlay) return;
+
+  // Close
+  document.getElementById('jarvis-close').onclick = closeJarvis;
+
+  // Send button
+  jarvisSend.onclick = function () { sendJarvis(jarvisInput.value.trim()); };
+
+  // Enter key
+  jarvisInput.onkeydown = function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendJarvis(jarvisInput.value.trim());
+    }
+  };
+
+  // Reset conversation
+  jarvisReset.onclick = function () {
+    jarvisChatHistory = [];
+    jarvisChat.innerHTML = '';
+    addJarvisWelcome();
+    setJarvisStatus('');
+  };
+
+  // Mic
+  jarvisMic.onclick = toggleJarvisMic;
+
+  // Hint buttons
+  jarvisChat.addEventListener('click', function (e) {
+    var hint = e.target.closest('.jarvis-hint');
+    if (hint) {
+      var msg = hint.getAttribute('data-msg');
+      if (msg) sendJarvis(msg);
+    }
+    // Click on bot bubble to stop TTS
+    var bubble = e.target.closest('.jarvis-bubble-bot');
+    if (bubble && jarvisTTSActive) {
+      stopTTS();
+    }
+  });
+}
+
+function openJarvis() {
+  if (!jarvisOverlay) return;
+  jarvisOverlay.style.display = 'flex';
+  jarvisInput.focus();
+}
+
+function closeJarvis() {
+  if (!jarvisOverlay) return;
+  jarvisOverlay.style.display = 'none';
+  stopTTS();
+}
+
+// ---- Chat History Management ----
+function addToJarvisHistory(role, text) {
+  jarvisChatHistory.push({ role: role, text: text });
+  // Keep max 20 turns (40 items)
+  if (jarvisChatHistory.length > 40) {
+    jarvisChatHistory = jarvisChatHistory.slice(-40);
+  }
+}
+
+// ---- Sending Messages ----
+function sendJarvis(text) {
+  if (!text || jarvisIsSending) return;
+  jarvisIsSending = true;
+  stopTTS();
+
+  // Remove welcome if present
+  var welcome = jarvisChat.querySelector('.jarvis-welcome');
+  if (welcome) welcome.remove();
+
+  // Add user bubble
+  addJarvisBubble(text, 'user');
+  addToJarvisHistory('user', text);
+  jarvisInput.value = '';
+
+  // Show typing indicator
+  var typingEl = addJarvisTyping();
+  setJarvisStatus('응답 대기 중...');
+
+  api('/ai/chat', {
+    method: 'POST',
+    body: JSON.stringify({ message: text, history: jarvisChatHistory.slice(0, -1) })
+  })
+  .then(function (r) { return r.json(); })
+  .then(function (d) {
+    typingEl.remove();
+    var reply = d.reply || d.error || '이해하지 못했습니다.';
+    addJarvisBubble(reply, 'bot');
+    addToJarvisHistory('model', reply);
+    setJarvisStatus('');
+    speak(reply);
+  })
+  .catch(function (e) {
+    typingEl.remove();
+    addJarvisBubble('오류가 발생했습니다: ' + e.message, 'error');
+    setJarvisStatus('');
+  })
+  .then(function () {
+    jarvisIsSending = false;
+  });
+}
+
+// ---- Bubble Rendering ----
+function addJarvisBubble(text, type) {
+  var div = document.createElement('div');
+  div.className = 'jarvis-bubble jarvis-bubble-' + type;
+
+  if (type === 'bot') {
+    div.innerHTML = renderJarvisMd(text);
+    div.title = 'TTS 중단하려면 클릭';
+  } else if (type === 'error') {
+    div.className = 'jarvis-bubble jarvis-bubble-error';
+    div.textContent = text;
+  } else {
+    div.textContent = text;
+  }
+
+  jarvisChat.appendChild(div);
+  jarvisChat.scrollTop = jarvisChat.scrollHeight;
+  return div;
+}
+
+function addJarvisTyping() {
+  var div = document.createElement('div');
+  div.className = 'jarvis-typing';
+  div.innerHTML = '<span></span><span></span><span></span> Jarvis가 생각 중...';
+  jarvisChat.appendChild(div);
+  jarvisChat.scrollTop = jarvisChat.scrollHeight;
+  return div;
+}
+
+function addJarvisWelcome() {
+  var div = document.createElement('div');
+  div.className = 'jarvis-welcome';
+  div.innerHTML = '<div class="jarvis-welcome-icon">🤖</div>' +
+    '<div class="jarvis-welcome-text">안녕하세요! Jarvis입니다.<br>무엇을 도와드릴까요?</div>' +
+    '<div class="jarvis-welcome-hints">' +
+    '<button class="jarvis-hint" data-msg="오늘 메모 보여줘">📋 오늘 메모 보기</button>' +
+    '<button class="jarvis-hint" data-msg="할일 추가: 보고서 작성">✅ 할일 추가</button>' +
+    '<button class="jarvis-hint" data-msg="이번 주 일정 알려줘">📅 이번 주 일정</button>' +
+    '</div>';
+  jarvisChat.appendChild(div);
+}
+
+// ---- Simple markdown for bot replies ----
+function renderJarvisMd(text) {
+  if (!text) return '';
+  var h = esc(text);
+  // Bold
+  h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  // Inline code
+  h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Unordered list
+  h = h.replace(/^[-•] (.+)$/gm, '<li>$1</li>');
+  // Ordered list
+  h = h.replace(/^\d+\.\s+(.+)$/gm, '<li>$1</li>');
+  // Line breaks
+  h = h.replace(/\n/g, '<br>');
+  return h;
+}
+
+// ---- Status ----
+function setJarvisStatus(msg) {
+  if (jarvisStatus) jarvisStatus.textContent = msg;
+}
+
+// ---- TTS ----
+function speak(text) {
+  if (!text || !window.speechSynthesis) return;
+  stopTTS();
+
+  // Split long text into sentences for better TTS
+  var sentences = text.match(/[^.!?。！？\n]+[.!?。！？]?/g) || [text];
+  jarvisTTSActive = true;
+  setJarvisStatus('🔊 TTS 재생 중 (클릭으로 중단)');
+
+  // Disable mic during TTS
+  if (jarvisMic) jarvisMic.disabled = true;
+
+  var idx = 0;
+  function speakNext() {
+    if (idx >= sentences.length || !jarvisTTSActive) {
+      jarvisTTSActive = false;
+      setJarvisStatus('');
+      if (jarvisMic) jarvisMic.disabled = false;
+      return;
+    }
+    var sentence = sentences[idx].trim();
+    idx++;
+    if (!sentence) { speakNext(); return; }
+
+    var u = new SpeechSynthesisUtterance(sentence);
+    u.lang = 'ko-KR';
+    u.onend = speakNext;
+    u.onerror = function () {
+      jarvisTTSActive = false;
+      setJarvisStatus('');
+      if (jarvisMic) jarvisMic.disabled = false;
+    };
+    window.speechSynthesis.speak(u);
+  }
+  speakNext();
+}
+
+function stopTTS() {
+  if (window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+  }
+  jarvisTTSActive = false;
+  setJarvisStatus('');
+  if (jarvisMic) jarvisMic.disabled = false;
+}
+
+// ---- Mic ----
+function toggleJarvisMic() {
+  var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    addJarvisBubble('이 브라우저에서는 음성 인식이 지원되지 않습니다.', 'error');
+    return;
+  }
+
+  // Stop if already recording
+  if (jarvisRecog) {
+    jarvisRecog.stop();
+    jarvisRecog = null;
+    jarvisMic.classList.remove('recording');
+    setJarvisStatus('');
+    return;
+  }
+
+  stopTTS();
+  jarvisRecog = new SpeechRecognition();
+  jarvisRecog.lang = 'ko-KR';
+  jarvisRecog.continuous = true;
+  jarvisRecog.interimResults = true;
+
+  jarvisRecog.start();
+  jarvisMic.classList.add('recording');
+  setJarvisStatus('🎤 듣는 중...');
+
+  var finalTranscript = '';
+
+  jarvisRecog.onresult = function (e) {
+    var interim = '';
+    for (var i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) {
+        finalTranscript += e.results[i][0].transcript;
+      } else {
+        interim += e.results[i][0].transcript;
+      }
+    }
+    jarvisInput.value = finalTranscript + interim;
+    if (interim) {
+      setJarvisStatus('🎤 ' + interim);
+    }
+  };
+
+  jarvisRecog.onend = function () {
+    jarvisRecog = null;
+    jarvisMic.classList.remove('recording');
+    setJarvisStatus('');
+
+    // Auto-send if we got text
+    var text = (finalTranscript || jarvisInput.value).trim();
+    if (text) {
+      sendJarvis(text);
+    }
+  };
+
+  jarvisRecog.onerror = function (e) {
+    if (e.error !== 'no-speech' && e.error !== 'aborted') {
+      setJarvisStatus('음성 인식 오류: ' + e.error);
+      setTimeout(function () { setJarvisStatus(''); }, 3000);
+    }
+    jarvisRecog = null;
+    jarvisMic.classList.remove('recording');
+  };
+}
+
 
 function uploadImages() {
   var uploaded = [];
@@ -499,7 +938,48 @@ function loadSettings() {
 
   // QR code
   loadQRCode();
+  
+  // Phase 4: Calendar Status
+  checkCalendarStatus();
 }
+
+function checkCalendarStatus() {
+  api('/calendar/status')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var st = document.getElementById('cal-status');
+      var btn = document.getElementById('cal-connect-btn');
+      var msg = document.getElementById('cal-msg');
+      
+      if(d.connected) {
+        st.textContent = '연결됨';
+        st.className = 'badge ok';
+        st.style.background = 'var(--green)';
+        st.style.color = '#fff';
+        btn.textContent = '재연결';
+        msg.style.display = 'none';
+      } else if (!d.hasEnv) {
+        st.textContent = '설정 필요';
+        st.className = 'badge err';
+        btn.disabled = true;
+        msg.textContent = '.env 파일에 GOOGLE_CLIENT_ID 설정이 필요합니다.';
+        msg.style.display = '';
+      } else {
+        st.textContent = '미연결';
+        st.className = 'badge';
+        st.style.background = 'var(--bg-card)';
+        st.style.color = 'var(--text2)';
+        btn.textContent = '계정 연결';
+        btn.disabled = false;
+        msg.style.display = 'none';
+      }
+    })
+    .catch(function() {});
+}
+
+document.getElementById('cal-connect-btn').addEventListener('click', function() {
+  window.open('/api/auth/google', '_blank', 'width=500,height=600');
+});
 
 // ============================================================
 // Markdown renderer
@@ -1076,8 +1556,38 @@ function initReminders() {
 }
 
 // ============================================================
-// DOMContentLoaded — Wire up all event listeners
+// Phase 3: RAG (Knowledge Base)
 // ============================================================
+document.getElementById('reindex-btn').addEventListener('click', function() {
+  var status = document.getElementById('reindex-status');
+  var btn = document.getElementById('reindex-btn');
+  
+  if(!confirm('최근 50개 노트를 AI 지식 베이스에 추가하시겠습니까? (1~2분 소요)')) return;
+  
+  btn.disabled = true;
+  btn.textContent = '구축 중... (잠시만 기다려주세요)';
+  status.textContent = '노트 분석 및 임베딩 생성 중...';
+  
+  api('/rag/reindex', { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if(d.success) {
+        status.textContent = '완료! ' + d.message;
+        status.style.color = 'var(--green)';
+      } else {
+        throw new Error(d.error || '실패');
+      }
+    })
+    .catch(function(e) {
+      status.textContent = '오류: ' + e.message;
+      status.style.color = 'var(--red)';
+    })
+    .finally(function() {
+      btn.disabled = false;
+      btn.textContent = '지식 베이스 구축 (최근 50개)';
+    });
+});
+
 document.addEventListener('DOMContentLoaded', function () {
   // Auth
   document.getElementById('auth-btn').addEventListener('click', doAuth);

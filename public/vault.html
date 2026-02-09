@@ -1,0 +1,871 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vault Manager</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#1e1e2e;--bg2:#181825;--bg3:#11111b;--surface:#313244;
+  --overlay:#45475a;--text:#cdd6f4;--subtext:#a6adc8;--blue:#89b4fa;
+  --green:#a6e3a1;--red:#f38ba8;--yellow:#f9e2af;--mauve:#cba6f7;
+  --teal:#94e2d5;--peach:#fab387;--border:#585b70;
+  --tree-w:260px;--info-w:280px;--bar-h:36px;--hdr-h:48px;
+}
+html,body{height:100%;font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px}
+button{cursor:pointer;border:none;background:none;color:var(--text);font:inherit}
+input,textarea,select{font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:4px 8px;outline:none}
+input:focus,textarea:focus{border-color:var(--blue)}
+
+/* Layout */
+#app{display:flex;flex-direction:column;height:100vh}
+#header{height:var(--hdr-h);background:var(--bg3);display:flex;align-items:center;padding:0 12px;gap:8px;border-bottom:1px solid var(--border);flex-shrink:0}
+#header h1{font-size:16px;color:var(--blue);white-space:nowrap}
+#header .spacer{flex:1}
+.hdr-btn{padding:4px 10px;border-radius:4px;font-size:13px;background:var(--surface);border:1px solid var(--border)}
+.hdr-btn:hover{background:var(--overlay)}
+#search-box{width:220px;font-size:13px}
+
+#main{display:flex;flex:1;overflow:hidden}
+#tree-panel{width:var(--tree-w);background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow:hidden}
+#tree-header{padding:8px;font-size:12px;color:var(--subtext);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:4px}
+#tree-list{flex:1;overflow-y:auto;padding:4px 0}
+
+#center-panel{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+#note-toolbar{height:36px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 8px;gap:6px;flex-shrink:0}
+.tb-btn{padding:2px 8px;border-radius:3px;font-size:12px;background:var(--surface);border:1px solid var(--border)}
+.tb-btn:hover{background:var(--overlay)}
+.tb-btn.active{background:var(--blue);color:var(--bg3);border-color:var(--blue)}
+#note-path{font-size:12px;color:var(--subtext);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#note-content{flex:1;overflow:auto;padding:16px}
+#note-view{line-height:1.7}
+#note-view h1{font-size:1.6em;color:var(--blue);margin:0.6em 0 0.3em}
+#note-view h2{font-size:1.35em;color:var(--mauve);margin:0.5em 0 0.3em}
+#note-view h3{font-size:1.15em;color:var(--teal);margin:0.4em 0 0.2em}
+#note-view code{background:var(--surface);padding:1px 4px;border-radius:3px;font-size:0.9em}
+#note-view pre{background:var(--bg3);padding:12px;border-radius:6px;overflow-x:auto;margin:8px 0}
+#note-view pre code{background:none;padding:0}
+#note-view blockquote{border-left:3px solid var(--mauve);padding-left:12px;color:var(--subtext);margin:8px 0}
+#note-view a{color:var(--blue);text-decoration:none}
+#note-view ul,#note-view ol{padding-left:24px;margin:4px 0}
+#note-view li{margin:2px 0}
+#note-view table{border-collapse:collapse;margin:8px 0;width:100%}
+#note-view th,#note-view td{border:1px solid var(--border);padding:4px 8px;text-align:left}
+#note-view th{background:var(--surface)}
+#note-view hr{border:none;border-top:1px solid var(--border);margin:12px 0}
+#note-view img{max-width:100%;border-radius:4px}
+#note-view .wikilink{color:var(--teal);cursor:pointer}
+#note-view .wikilink:hover{text-decoration:underline}
+#note-view .tag{color:var(--peach);cursor:pointer}
+#note-edit{width:100%;height:100%;resize:none;background:var(--bg);border:none;color:var(--text);padding:16px;font-family:'Cascadia Code','Fira Code','Consolas',monospace;font-size:13px;line-height:1.6;display:none}
+
+#info-panel{width:var(--info-w);background:var(--bg2);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow:hidden}
+#info-header{padding:8px;font-size:12px;font-weight:600;color:var(--subtext);border-bottom:1px solid var(--border)}
+#info-content{flex:1;overflow-y:auto;padding:8px}
+.info-section{margin-bottom:12px}
+.info-section h4{font-size:11px;color:var(--subtext);text-transform:uppercase;margin-bottom:4px;letter-spacing:0.5px}
+.info-section .val{font-size:13px;word-break:break-all}
+.info-tag{display:inline-block;background:var(--surface);padding:1px 6px;border-radius:10px;font-size:11px;margin:2px;color:var(--peach);cursor:pointer}
+.info-tag:hover{background:var(--overlay)}
+.backlink-item{display:block;padding:3px 0;color:var(--blue);font-size:12px;cursor:pointer;text-decoration:none}
+.backlink-item:hover{color:var(--teal)}
+#append-area{width:100%;min-height:60px;font-size:12px;margin-top:4px;resize:vertical}
+#append-btn{margin-top:4px;width:100%}
+
+#footer{height:var(--bar-h);background:var(--bg3);border-top:1px solid var(--border);display:flex;align-items:center;padding:0 12px;gap:4px;overflow-x:auto;flex-shrink:0}
+.recent-item{padding:2px 8px;border-radius:3px;font-size:11px;color:var(--subtext);white-space:nowrap;cursor:pointer;background:var(--surface)}
+.recent-item:hover{color:var(--text);background:var(--overlay)}
+#footer-label{font-size:11px;color:var(--subtext);margin-right:4px;white-space:nowrap}
+
+/* Tree */
+.tree-folder,.tree-file{padding:3px 6px;cursor:pointer;display:flex;align-items:center;gap:4px;font-size:13px;border-radius:3px;margin:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tree-folder:hover,.tree-file:hover{background:var(--surface)}
+.tree-file.active{background:var(--surface);color:var(--blue)}
+.tree-folder .icon{font-size:11px;width:14px;text-align:center;flex-shrink:0}
+.tree-file .icon{font-size:11px;width:14px;text-align:center;flex-shrink:0;color:var(--subtext)}
+.tree-children{padding-left:12px}
+.tree-children.collapsed{display:none}
+
+/* Modal */
+.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:100;display:none;align-items:center;justify-content:center}
+.modal-overlay.show{display:flex}
+.modal{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:20px;min-width:400px;max-width:90vw}
+.modal h3{margin-bottom:12px;color:var(--blue);font-size:15px}
+.modal label{display:block;font-size:12px;color:var(--subtext);margin:8px 0 4px}
+.modal input,.modal textarea,.modal select{width:100%}
+.modal textarea{min-height:100px;resize:vertical}
+.modal-btns{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
+.btn-primary{padding:6px 16px;border-radius:4px;background:var(--blue);color:var(--bg3);font-weight:600}
+.btn-primary:hover{opacity:0.9}
+.btn-danger{padding:6px 16px;border-radius:4px;background:var(--red);color:var(--bg3);font-weight:600}
+.btn-danger:hover{opacity:0.9}
+.btn-cancel{padding:6px 16px;border-radius:4px;background:var(--surface);border:1px solid var(--border)}
+.btn-cancel:hover{background:var(--overlay)}
+
+/* Search results */
+#search-results{position:absolute;top:var(--hdr-h);right:200px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;max-height:60vh;overflow-y:auto;width:500px;z-index:50;display:none;box-shadow:0 4px 16px rgba(0,0,0,0.4)}
+#search-results.show{display:block}
+.sr-item{padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border)}
+.sr-item:hover{background:var(--surface)}
+.sr-item:last-child{border-bottom:none}
+.sr-title{font-size:13px;color:var(--blue);font-weight:500}
+.sr-snippet{font-size:11px;color:var(--subtext);margin-top:2px;line-height:1.4}
+.sr-snippet mark{background:var(--yellow);color:var(--bg3);padding:0 2px;border-radius:2px}
+
+/* Command palette */
+#cmd-palette{position:fixed;top:20%;left:50%;transform:translateX(-50%);background:var(--bg2);border:1px solid var(--border);border-radius:8px;width:500px;max-height:60vh;z-index:200;display:none;box-shadow:0 8px 32px rgba(0,0,0,0.5);flex-direction:column}
+#cmd-palette.show{display:flex}
+#cmd-filter{border:none;border-bottom:1px solid var(--border);border-radius:8px 8px 0 0;padding:10px 12px;font-size:14px}
+#cmd-list{overflow-y:auto;max-height:50vh}
+.cmd-item{padding:8px 12px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:8px}
+.cmd-item:hover,.cmd-item.selected{background:var(--surface)}
+.cmd-item .cmd-id{color:var(--subtext);font-size:11px}
+.cmd-item .cmd-name{color:var(--text)}
+
+/* Toast */
+#toast{position:fixed;bottom:60px;right:20px;background:var(--surface);color:var(--text);padding:8px 16px;border-radius:6px;font-size:13px;z-index:300;display:none;border:1px solid var(--border);box-shadow:0 2px 8px rgba(0,0,0,0.3)}
+#toast.show{display:block;animation:fadeIn 0.2s}
+@keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+
+/* Empty state */
+.empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--subtext);gap:8px}
+.empty-state .icon{font-size:48px;opacity:0.3}
+.empty-state p{font-size:14px}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--overlay);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--border)}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- Header -->
+  <div id="header">
+    <h1>Vault Manager</h1>
+    <div class="spacer"></div>
+    <input type="text" id="search-box" placeholder="Search vault... (Ctrl+K)" autocomplete="off">
+    <button class="hdr-btn" onclick="showCreateModal()">+ New</button>
+    <button class="hdr-btn" onclick="toggleCmdPalette()">&#9889; Cmd</button>
+    <a href="/" class="hdr-btn" style="text-decoration:none">&#8592; Home</a>
+  </div>
+
+  <!-- Search Results Dropdown -->
+  <div id="search-results"></div>
+
+  <!-- Main 3-panel -->
+  <div id="main">
+    <!-- Left: Tree -->
+    <div id="tree-panel">
+      <div id="tree-header">
+        <span>EXPLORER</span>
+        <div class="spacer" style="flex:1"></div>
+        <button style="font-size:11px;color:var(--subtext)" onclick="loadTree('')" title="Refresh">&#8635;</button>
+      </div>
+      <div id="tree-list"></div>
+    </div>
+
+    <!-- Center: Note -->
+    <div id="center-panel">
+      <div id="note-toolbar">
+        <span id="note-path">Select a note</span>
+        <div class="spacer" style="flex:1"></div>
+        <button class="tb-btn active" id="btn-view" onclick="setMode('view')">View</button>
+        <button class="tb-btn" id="btn-edit" onclick="setMode('edit')">Edit</button>
+        <button class="tb-btn" id="btn-save" onclick="saveNote()" style="display:none">Save</button>
+        <button class="tb-btn" onclick="showMoveModal()">Move</button>
+        <button class="tb-btn" style="color:var(--red)" onclick="deleteNote()">Delete</button>
+      </div>
+      <div id="note-content">
+        <div id="note-view">
+          <div class="empty-state">
+            <div class="icon">&#128209;</div>
+            <p>Select a note from the tree to view</p>
+          </div>
+        </div>
+        <textarea id="note-edit" spellcheck="false"></textarea>
+      </div>
+    </div>
+
+    <!-- Right: Info -->
+    <div id="info-panel">
+      <div id="info-header">INFO</div>
+      <div id="info-content">
+        <div class="empty-state" style="height:auto;padding:20px">
+          <p style="font-size:12px">Note info will appear here</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer: Recent -->
+  <div id="footer">
+    <span id="footer-label">Recent:</span>
+  </div>
+</div>
+
+<!-- Create Modal -->
+<div class="modal-overlay" id="modal-create">
+  <div class="modal">
+    <h3>Create New Note</h3>
+    <label>Path (e.g. folder/note.md)</label>
+    <input type="text" id="create-path" placeholder="folder/note.md">
+    <label>Content</label>
+    <textarea id="create-content" placeholder="# New Note"></textarea>
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="closeModal('modal-create')">Cancel</button>
+      <button class="btn-primary" onclick="createNote()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Move Modal -->
+<div class="modal-overlay" id="modal-move">
+  <div class="modal">
+    <h3>Move / Rename Note</h3>
+    <label>Current path</label>
+    <input type="text" id="move-from" readonly style="opacity:0.7">
+    <label>New path</label>
+    <input type="text" id="move-to" placeholder="new/path/note.md">
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="closeModal('modal-move')">Cancel</button>
+      <button class="btn-primary" onclick="moveNote()">Move</button>
+    </div>
+  </div>
+</div>
+
+<!-- Command Palette -->
+<div id="cmd-palette">
+  <input type="text" id="cmd-filter" placeholder="Type to filter commands..." autocomplete="off">
+  <div id="cmd-list"></div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+const API_KEY = localStorage.getItem('vaultvoice_api_key') || prompt('Enter API Key:') || '';
+if (API_KEY) localStorage.setItem('vaultvoice_api_key', API_KEY);
+
+const headers = () => ({ 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json' });
+
+let currentPath = '';
+let currentContent = '';
+let mode = 'view'; // view | edit
+let recentFiles = JSON.parse(localStorage.getItem('vm_recent') || '[]');
+let allCommands = [];
+let searchTimeout = null;
+
+// ---- API helpers ----
+async function api(method, url, body) {
+  const opts = { method, headers: headers() };
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  const res = await fetch(url, opts);
+  return res;
+}
+
+// ---- Toast ----
+function toast(msg, duration = 2500) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), duration);
+}
+
+// ---- Tree ----
+async function loadTree(folder, container) {
+  const target = container || document.getElementById('tree-list');
+  if (!container) target.innerHTML = '<div style="padding:12px;color:var(--subtext)">Loading...</div>';
+  try {
+    const res = await api('GET', `/api/vm/browse?folder=${encodeURIComponent(folder)}`);
+    const data = await res.json();
+    if (!container) target.innerHTML = '';
+    const files = (data.files || []).sort((a, b) => {
+      const aDir = a.endsWith('/');
+      const bDir = b.endsWith('/');
+      if (aDir !== bDir) return aDir ? -1 : 1;
+      return a.localeCompare(b);
+    });
+    for (const f of files) {
+      const isDir = f.endsWith('/');
+      const name = isDir ? f.slice(0, -1) : f;
+      const fullPath = folder ? folder + '/' + name : name;
+      if (isDir) {
+        const div = document.createElement('div');
+        const row = document.createElement('div');
+        row.className = 'tree-folder';
+        row.innerHTML = `<span class="icon">&#9654;</span><span>${esc(name)}</span>`;
+        const children = document.createElement('div');
+        children.className = 'tree-children collapsed';
+        let loaded = false;
+        row.onclick = async (e) => {
+          e.stopPropagation();
+          const collapsed = children.classList.toggle('collapsed');
+          row.querySelector('.icon').innerHTML = collapsed ? '&#9654;' : '&#9660;';
+          if (!loaded && !collapsed) {
+            loaded = true;
+            await loadTree(fullPath, children);
+          }
+        };
+        div.appendChild(row);
+        div.appendChild(children);
+        target.appendChild(div);
+      } else if (name.endsWith('.md')) {
+        const div = document.createElement('div');
+        div.className = 'tree-file';
+        div.innerHTML = `<span class="icon">&#128196;</span><span>${esc(name)}</span>`;
+        div.onclick = () => openNote(fullPath);
+        div.dataset.path = fullPath;
+        target.appendChild(div);
+      }
+    }
+  } catch (e) {
+    target.innerHTML = `<div style="padding:12px;color:var(--red)">${esc(e.message)}</div>`;
+  }
+}
+
+// ---- Note loading ----
+async function openNote(p) {
+  try {
+    const res = await api('GET', `/api/vm/read?path=${encodeURIComponent(p)}`);
+    if (!res.ok) { toast('Failed to load note'); return; }
+    const data = await res.json();
+    currentPath = p;
+    currentContent = data.content;
+    document.getElementById('note-path').textContent = p;
+    renderNote(currentContent);
+    document.getElementById('note-edit').value = currentContent;
+    setMode('view');
+    addRecent(p);
+    loadInfo(p, currentContent);
+    // Highlight in tree
+    document.querySelectorAll('.tree-file.active').forEach(el => el.classList.remove('active'));
+    const treeEl = document.querySelector(`.tree-file[data-path="${CSS.escape(p)}"]`);
+    if (treeEl) treeEl.classList.add('active');
+  } catch (e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+// ---- Markdown renderer (simple) ----
+function renderNote(md) {
+  const el = document.getElementById('note-view');
+  el.innerHTML = renderMarkdown(md);
+  // Wire wikilinks
+  el.querySelectorAll('.wikilink').forEach(a => {
+    a.onclick = () => {
+      const target = a.dataset.target;
+      if (target) searchAndOpen(target);
+    };
+  });
+}
+
+function renderMarkdown(text) {
+  // Strip frontmatter
+  let md = text.replace(/^---\n[\s\S]*?\n---\n?/, '');
+  // Escape HTML
+  md = md.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // Code blocks
+  md = md.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
+    `<pre><code class="lang-${lang}">${code.trim()}</code></pre>`);
+  // Inline code
+  md = md.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Headers
+  md = md.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  md = md.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  md = md.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  // Bold/Italic
+  md = md.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  md = md.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  md = md.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  // Strikethrough
+  md = md.replace(/~~(.+?)~~/g, '<del>$1</del>');
+  // Blockquote
+  md = md.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+  // HR
+  md = md.replace(/^---$/gm, '<hr>');
+  // Wikilinks [[target|display]] or [[target]]
+  md = md.replace(/\[\[([^\]|]+?)(?:\|([^\]]+?))?\]\]/g, (_, target, display) =>
+    `<span class="wikilink" data-target="${target}">${display || target}</span>`);
+  // Tags #tag
+  md = md.replace(/(^|\s)#([a-zA-Z0-9가-힣_/\-]+)/g, '$1<span class="tag">#$2</span>');
+  // Links [text](url)
+  md = md.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  // Images ![alt](url)
+  md = md.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img alt="$1" src="$2">');
+  // Checkbox
+  md = md.replace(/^(\s*)- \[x\] (.+)$/gm, '$1<li style="list-style:none">&#9745; $2</li>');
+  md = md.replace(/^(\s*)- \[ \] (.+)$/gm, '$1<li style="list-style:none">&#9744; $2</li>');
+  // Unordered list
+  md = md.replace(/^- (.+)$/gm, '<li>$1</li>');
+  // Numbered list
+  md = md.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+  // Tables
+  md = md.replace(/^(\|.+\|)\n(\|[\s\-:|]+\|)\n((?:\|.+\|\n?)*)/gm, (_, header, sep, body) => {
+    const thCells = header.split('|').filter(c => c.trim()).map(c => `<th>${c.trim()}</th>`).join('');
+    const rows = body.trim().split('\n').map(row => {
+      const cells = row.split('|').filter(c => c.trim()).map(c => `<td>${c.trim()}</td>`).join('');
+      return `<tr>${cells}</tr>`;
+    }).join('');
+    return `<table><thead><tr>${thCells}</tr></thead><tbody>${rows}</tbody></table>`;
+  });
+  // Paragraphs
+  md = md.replace(/\n{2,}/g, '</p><p>');
+  md = md.replace(/\n/g, '<br>');
+  return '<p>' + md + '</p>';
+}
+
+// ---- View / Edit mode ----
+function setMode(m) {
+  mode = m;
+  const view = document.getElementById('note-view');
+  const edit = document.getElementById('note-edit');
+  const btnView = document.getElementById('btn-view');
+  const btnEdit = document.getElementById('btn-edit');
+  const btnSave = document.getElementById('btn-save');
+  if (m === 'view') {
+    view.style.display = 'block';
+    edit.style.display = 'none';
+    btnView.classList.add('active');
+    btnEdit.classList.remove('active');
+    btnSave.style.display = 'none';
+  } else {
+    view.style.display = 'none';
+    edit.style.display = 'block';
+    edit.value = currentContent;
+    btnView.classList.remove('active');
+    btnEdit.classList.add('active');
+    btnSave.style.display = '';
+    edit.focus();
+  }
+}
+
+// ---- Save ----
+async function saveNote() {
+  if (!currentPath) return;
+  const content = document.getElementById('note-edit').value;
+  try {
+    const res = await api('PUT', '/api/vm/write', { path: currentPath, content });
+    if (!res.ok) { toast('Save failed'); return; }
+    currentContent = content;
+    renderNote(content);
+    toast('Saved!');
+    loadInfo(currentPath, content);
+  } catch (e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+// ---- Delete ----
+async function deleteNote() {
+  if (!currentPath) return;
+  if (!confirm(`Delete "${currentPath}"?`)) return;
+  try {
+    const res = await api('DELETE', `/api/vm/delete?path=${encodeURIComponent(currentPath)}`);
+    if (!res.ok) { toast('Delete failed'); return; }
+    toast('Deleted');
+    currentPath = '';
+    currentContent = '';
+    document.getElementById('note-path').textContent = 'Select a note';
+    document.getElementById('note-view').innerHTML = '<div class="empty-state"><div class="icon">&#128209;</div><p>Note deleted</p></div>';
+    document.getElementById('info-content').innerHTML = '';
+    loadTree('');
+  } catch (e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+// ---- Create ----
+function showCreateModal() {
+  document.getElementById('create-path').value = '';
+  document.getElementById('create-content').value = '# New Note\n\n';
+  document.getElementById('modal-create').classList.add('show');
+  document.getElementById('create-path').focus();
+}
+
+async function createNote() {
+  const p = document.getElementById('create-path').value.trim();
+  const c = document.getElementById('create-content').value;
+  if (!p) { toast('Path required'); return; }
+  const notePath = p.endsWith('.md') ? p : p + '.md';
+  try {
+    const res = await api('PUT', '/api/vm/write', { path: notePath, content: c });
+    if (!res.ok) { toast('Create failed'); return; }
+    closeModal('modal-create');
+    toast('Created!');
+    loadTree('');
+    openNote(notePath);
+  } catch (e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+// ---- Move ----
+function showMoveModal() {
+  if (!currentPath) return;
+  document.getElementById('move-from').value = currentPath;
+  document.getElementById('move-to').value = currentPath;
+  document.getElementById('modal-move').classList.add('show');
+  document.getElementById('move-to').focus();
+  document.getElementById('move-to').select();
+}
+
+async function moveNote() {
+  const from = document.getElementById('move-from').value;
+  const to = document.getElementById('move-to').value.trim();
+  if (!to || from === to) { closeModal('modal-move'); return; }
+  try {
+    const res = await api('POST', '/api/vm/move', { from, to });
+    if (!res.ok) { toast('Move failed'); return; }
+    closeModal('modal-move');
+    toast('Moved!');
+    loadTree('');
+    openNote(to);
+  } catch (e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+// ---- Search ----
+document.getElementById('search-box').addEventListener('input', (e) => {
+  clearTimeout(searchTimeout);
+  const q = e.target.value.trim();
+  if (!q) { hideSearch(); return; }
+  searchTimeout = setTimeout(() => doSearch(q), 300);
+});
+
+async function doSearch(q) {
+  try {
+    const res = await api('GET', `/api/vm/search?q=${encodeURIComponent(q)}&ctx=120`);
+    if (!res.ok) return;
+    const results = await res.json();
+    const el = document.getElementById('search-results');
+    if (!results.length) {
+      el.innerHTML = '<div class="sr-item"><div class="sr-title">No results</div></div>';
+      el.classList.add('show');
+      return;
+    }
+    el.innerHTML = results.slice(0, 20).map(r => {
+      const snippets = (r.matches || []).slice(0, 2).map(m => {
+        const txt = (m.match && m.match.text) || m.context || '';
+        return esc(txt.slice(0, 120));
+      }).join(' ... ');
+      return `<div class="sr-item" onclick="openNote('${escAttr(r.filename)}');hideSearch()">
+        <div class="sr-title">${esc(r.filename)}</div>
+        <div class="sr-snippet">${snippets || ''}</div>
+      </div>`;
+    }).join('');
+    el.classList.add('show');
+  } catch (e) { /* ignore */ }
+}
+
+function hideSearch() {
+  document.getElementById('search-results').classList.remove('show');
+}
+
+async function searchAndOpen(name) {
+  // Try to find note by searching
+  const withMd = name.endsWith('.md') ? name : name + '.md';
+  try {
+    const res = await api('GET', `/api/vm/search?q=${encodeURIComponent(name)}&ctx=0`);
+    if (res.ok) {
+      const results = await res.json();
+      const exact = results.find(r => r.filename === withMd || r.filename.endsWith('/' + withMd));
+      if (exact) { openNote(exact.filename); return; }
+      if (results.length > 0) { openNote(results[0].filename); return; }
+    }
+  } catch (e) { /* ignore */ }
+  toast(`"${name}" not found`);
+}
+
+// ---- Info sidebar ----
+async function loadInfo(p, content) {
+  const el = document.getElementById('info-content');
+  const filename = p.split('/').pop().replace('.md', '');
+  let html = '';
+
+  // Path
+  html += `<div class="info-section"><h4>Path</h4><div class="val">${esc(p)}</div></div>`;
+
+  // Size
+  html += `<div class="info-section"><h4>Size</h4><div class="val">${content.length.toLocaleString()} chars</div></div>`;
+
+  // Tags
+  html += `<div class="info-section"><h4>Tags</h4><div id="info-tags">Loading...</div></div>`;
+
+  // Backlinks
+  html += `<div class="info-section"><h4>Backlinks</h4><div id="info-backlinks">Loading...</div></div>`;
+
+  // Append
+  html += `<div class="info-section"><h4>Append Content</h4>
+    <textarea id="append-area" placeholder="Content to append..."></textarea>
+    <button class="tb-btn" id="append-btn" onclick="appendContent()">Append</button>
+  </div>`;
+
+  el.innerHTML = html;
+
+  // Load tags async
+  loadTags(p);
+  // Load backlinks async
+  loadBacklinks(filename);
+}
+
+async function loadTags(p) {
+  const el = document.getElementById('info-tags');
+  try {
+    const res = await api('GET', `/api/vm/tags?path=${encodeURIComponent(p)}`);
+    if (!res.ok) { el.textContent = 'Error'; return; }
+    const data = await res.json();
+    if (!data.tags.length) {
+      el.innerHTML = '<span style="font-size:12px;color:var(--subtext)">No tags</span> <button class="tb-btn" onclick="promptAddTag()" style="font-size:11px">+ Add</button>';
+      return;
+    }
+    el.innerHTML = data.tags.map(t => `<span class="info-tag">#${esc(t)}</span>`).join('') +
+      ' <button class="tb-btn" onclick="promptAddTag()" style="font-size:11px">+ Add</button>' +
+      ' <button class="tb-btn" onclick="promptEditTags()" style="font-size:11px">Edit</button>';
+  } catch (e) {
+    el.textContent = 'Error';
+  }
+}
+
+async function loadBacklinks(name) {
+  const el = document.getElementById('info-backlinks');
+  try {
+    const res = await api('GET', `/api/vm/backlinks?name=${encodeURIComponent(name)}`);
+    if (!res.ok) { el.textContent = 'Error'; return; }
+    const results = await res.json();
+    if (!results.length) {
+      el.innerHTML = '<span style="font-size:12px;color:var(--subtext)">No backlinks</span>';
+      return;
+    }
+    el.innerHTML = results.slice(0, 15).map(r =>
+      `<a class="backlink-item" onclick="openNote('${escAttr(r.filename)}')">${esc(r.filename)}</a>`
+    ).join('');
+  } catch (e) {
+    el.textContent = 'Error';
+  }
+}
+
+async function promptAddTag() {
+  const tag = prompt('Enter tag name:');
+  if (!tag || !currentPath) return;
+  try {
+    const res = await api('GET', `/api/vm/tags?path=${encodeURIComponent(currentPath)}`);
+    const data = await res.json();
+    const tags = [...data.frontmatterTags, tag.replace(/^#/, '')];
+    await api('PUT', '/api/vm/tags', { path: currentPath, tags });
+    toast('Tag added');
+    loadTags(currentPath);
+  } catch (e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+async function promptEditTags() {
+  if (!currentPath) return;
+  try {
+    const res = await api('GET', `/api/vm/tags?path=${encodeURIComponent(currentPath)}`);
+    const data = await res.json();
+    const input = prompt('Edit tags (comma-separated):', data.frontmatterTags.join(', '));
+    if (input === null) return;
+    const tags = input.split(',').map(t => t.trim()).filter(Boolean);
+    await api('PUT', '/api/vm/tags', { path: currentPath, tags });
+    toast('Tags updated');
+    loadTags(currentPath);
+  } catch (e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+// ---- Append ----
+async function appendContent() {
+  if (!currentPath) return;
+  const area = document.getElementById('append-area');
+  const content = area.value.trim();
+  if (!content) return;
+  try {
+    // Read current, append, write back
+    const readRes = await api('GET', `/api/vm/read?path=${encodeURIComponent(currentPath)}`);
+    const data = await readRes.json();
+    const updated = data.content.trimEnd() + '\n\n' + content + '\n';
+    const writeRes = await api('PUT', '/api/vm/write', { path: currentPath, content: updated });
+    if (!writeRes.ok) { toast('Append failed'); return; }
+    currentContent = updated;
+    renderNote(updated);
+    document.getElementById('note-edit').value = updated;
+    area.value = '';
+    toast('Appended!');
+  } catch (e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+// ---- Recent files ----
+function addRecent(p) {
+  recentFiles = [p, ...recentFiles.filter(f => f !== p)].slice(0, 15);
+  localStorage.setItem('vm_recent', JSON.stringify(recentFiles));
+  renderRecent();
+}
+
+function renderRecent() {
+  const footer = document.getElementById('footer');
+  const label = document.getElementById('footer-label');
+  footer.innerHTML = '';
+  footer.appendChild(label);
+  for (const p of recentFiles.slice(0, 10)) {
+    const btn = document.createElement('button');
+    btn.className = 'recent-item';
+    btn.textContent = p.split('/').pop();
+    btn.title = p;
+    btn.onclick = () => openNote(p);
+    footer.appendChild(btn);
+  }
+}
+
+// ---- Command Palette ----
+async function toggleCmdPalette() {
+  const el = document.getElementById('cmd-palette');
+  if (el.classList.contains('show')) {
+    el.classList.remove('show');
+    return;
+  }
+  el.classList.add('show');
+  document.getElementById('cmd-filter').value = '';
+  document.getElementById('cmd-filter').focus();
+  if (!allCommands.length) await loadCommands();
+  filterCommands('');
+}
+
+async function loadCommands() {
+  try {
+    const res = await api('GET', '/api/vm/commands');
+    if (!res.ok) return;
+    const data = await res.json();
+    const cmds = data.commands || data;
+    allCommands = Array.isArray(cmds)
+      ? cmds.map(c => ({ id: c.id, name: c.name || c.id }))
+      : Object.entries(cmds).map(([id, info]) => ({
+          id,
+          name: typeof info === 'string' ? info : (info.name || id)
+        }));
+  } catch (e) {
+    toast('Failed to load commands');
+  }
+}
+
+function filterCommands(q) {
+  const list = document.getElementById('cmd-list');
+  const filtered = q
+    ? allCommands.filter(c => c.id.toLowerCase().includes(q) || c.name.toLowerCase().includes(q))
+    : allCommands;
+  list.innerHTML = filtered.slice(0, 30).map(c =>
+    `<div class="cmd-item" onclick="execCommand('${escAttr(c.id)}')">
+      <span class="cmd-name">${esc(c.name)}</span>
+      <span class="cmd-id">${esc(c.id)}</span>
+    </div>`
+  ).join('');
+}
+
+document.getElementById('cmd-filter').addEventListener('input', (e) => {
+  filterCommands(e.target.value.trim().toLowerCase());
+});
+
+async function execCommand(id) {
+  document.getElementById('cmd-palette').classList.remove('show');
+  try {
+    const res = await api('POST', '/api/vm/command', { id });
+    if (!res.ok) { toast('Command failed'); return; }
+    toast(`Executed: ${id}`);
+  } catch (e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+// ---- Modal helpers ----
+function closeModal(id) {
+  document.getElementById(id).classList.remove('show');
+}
+
+// Close modals on overlay click
+document.querySelectorAll('.modal-overlay').forEach(el => {
+  el.addEventListener('click', (e) => {
+    if (e.target === el) el.classList.remove('show');
+  });
+});
+
+// ---- Keyboard shortcuts ----
+document.addEventListener('keydown', (e) => {
+  // Ctrl+K: Search
+  if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+    e.preventDefault();
+    document.getElementById('search-box').focus();
+  }
+  // Ctrl+S: Save
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault();
+    if (mode === 'edit') saveNote();
+  }
+  // Ctrl+E: Toggle edit
+  if ((e.ctrlKey || e.metaKey) && e.key === 'e') {
+    e.preventDefault();
+    setMode(mode === 'edit' ? 'view' : 'edit');
+  }
+  // Ctrl+P: Command palette
+  if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
+    e.preventDefault();
+    toggleCmdPalette();
+  }
+  // Escape: Close modals/search/palette
+  if (e.key === 'Escape') {
+    hideSearch();
+    document.getElementById('cmd-palette').classList.remove('show');
+    document.querySelectorAll('.modal-overlay.show').forEach(el => el.classList.remove('show'));
+  }
+});
+
+// Close search on outside click
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#search-results') && !e.target.closest('#search-box')) {
+    hideSearch();
+  }
+  if (!e.target.closest('#cmd-palette') && !e.target.closest('.hdr-btn')) {
+    document.getElementById('cmd-palette').classList.remove('show');
+  }
+});
+
+// ---- Util ----
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+function escAttr(s) {
+  return (s || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+}
+
+// ---- Init ----
+loadTree('');
+renderRecent();
+
+// Load recent files from server on init
+(async () => {
+  try {
+    const res = await api('GET', '/api/vm/recent?limit=10');
+    if (res.ok) {
+      const files = await res.json();
+      const footer = document.getElementById('footer');
+      const label = document.getElementById('footer-label');
+      if (files.length && !recentFiles.length) {
+        recentFiles = files.map(f => f.path);
+        localStorage.setItem('vm_recent', JSON.stringify(recentFiles));
+        renderRecent();
+      }
+    }
+  } catch (e) { /* ignore */ }
+})();
+</script>
+</body>
+</html>

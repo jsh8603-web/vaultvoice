@@ -185,9 +185,30 @@
         <div class="s-row"><span>상태</span><span id="st-conn" class="badge">확인중</span></div>
         <div class="s-row" style="border-top:0.5px solid var(--sep);padding-top:10px;margin-top:4px"><span>볼트</span><span id="st-vault" class="s-val">-</span></div>
       </div>
+      
+      <!-- Phase 3: RAG Knowledge Base -->
+      <div class="s-group">
+        <h2>지식 베이스 (RAG)</h2>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:8px">내 노트 내용을 AI가 이해하도록 학습시킵니다.</p>
+        <button class="btn-sm" id="reindex-btn" style="width:100%;padding:12px;font-size:14px;background:var(--purple)">지식 베이스 구축 (최근 50개)</button>
+        <div id="reindex-status" style="margin-top:8px;font-size:12px;color:var(--text2)"></div>
+      </div>
+
+      <!-- Phase 4: Google Calendar -->
+      <div class="s-group">
+        <h2>구글 캘린더 연동</h2>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:8px">일정 조회 및 추가를 위해 계정을 연결하세요.</p>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <span id="cal-status" class="badge" style="background:var(--bg-card);color:var(--text2)">미연결</span>
+          <button class="btn-sm" id="cal-connect-btn" style="padding:8px 16px;font-size:13px">계정 연결</button>
+        </div>
+        <div id="cal-msg" style="font-size:11px;color:var(--red);display:none"></div>
+      </div>
+
       <div class="s-group">
         <h2>기본 섹션</h2>
         <select id="def-sec" class="input">
+
           <option value="메모">메모</option>
           <option value="오늘할일">오늘할일</option>
           <option value="오늘 회고">오늘 회고</option>
@@ -196,7 +217,7 @@
       <!-- Reminders list -->
       <div class="s-group">
         <h2>알림 목록</h2>
-        <div id="reminder-list" class="reminder-list"><div class="empty">설정된 알림 없음</div></div>
+    <div id="reminder-list" class="reminder-list"><div class="empty">설정된 알림 없음</div></div>
       </div>
       <div class="s-group">
         <button class="btn-danger" id="logout-btn">로그아웃</button>
@@ -222,6 +243,56 @@
     <div style="display:flex;gap:8px">
       <button class="btn" id="reminder-save" style="flex:1">설정</button>
       <button class="btn-danger" id="reminder-cancel" style="flex:1">취소</button>
+    </div>
+  </div>
+</div>
+
+<!-- Smart Scan Result Overlay -->
+<div id="scan-overlay" class="overlay" style="display:none;z-index:200">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+    <h2 style="font-size:20px;font-weight:700">스마트 스캔 결과</h2>
+    <button class="close-btn" id="scan-close" style="position:static;font-size:24px">&times;</button>
+  </div>
+  <div id="scan-content" class="note-content" style="margin-bottom:16px">
+    <div style="text-align:center;padding:20px;color:var(--text2)">분석 중...</div>
+  </div>
+  <div style="display:flex;gap:8px">
+    <button class="btn" id="scan-apply" style="flex:1">메모에 추가</button>
+    <button class="btn-danger" id="scan-cancel" style="flex:1;background:var(--bg-card);border:1px solid var(--sep);color:var(--text)">닫기</button>
+  </div>
+</div>
+
+<!-- Jarvis Chat Overlay -->
+<div id="jarvis-overlay" class="jarvis-overlay" style="display:none">
+  <div class="jarvis-container">
+    <div class="jarvis-header">
+      <div class="jarvis-header-left">
+        <h2 class="jarvis-title">Jarvis</h2>
+        <span id="jarvis-status" class="jarvis-status"></span>
+      </div>
+      <div class="jarvis-header-right">
+        <button id="jarvis-reset" class="jarvis-header-btn" title="대화 초기화">🗑️</button>
+        <button id="jarvis-close" class="jarvis-header-btn" title="닫기">&times;</button>
+      </div>
+    </div>
+
+    <div id="jarvis-chat" class="jarvis-chat">
+      <div class="jarvis-welcome">
+        <div class="jarvis-welcome-icon">🤖</div>
+        <div class="jarvis-welcome-text">안녕하세요! Jarvis입니다.<br>무엇을 도와드릴까요?</div>
+        <div class="jarvis-welcome-hints">
+          <button class="jarvis-hint" data-msg="오늘 메모 보여줘">📋 오늘 메모 보기</button>
+          <button class="jarvis-hint" data-msg="할일 추가: 보고서 작성">✅ 할일 추가</button>
+          <button class="jarvis-hint" data-msg="이번 주 일정 알려줘">📅 이번 주 일정</button>
+          <button class="jarvis-hint" data-msg="볼트에서 회의록 검색해줘">🔍 볼트 검색</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="jarvis-input-area">
+      <input type="text" id="jarvis-input" class="jarvis-input" placeholder="메시지 입력..." autocomplete="off">
+      <button id="jarvis-send" class="jarvis-send-btn" title="전송">➤</button>
+      <button id="jarvis-mic" class="jarvis-mic-btn" title="음성 입력">🎙️</button>
     </div>
   </div>
 </div>
