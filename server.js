@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
-const fetch = require('node-fetch');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 3939;
@@ -18,12 +18,15 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const OBSIDIAN_REST_URL = process.env.OBSIDIAN_REST_URL || 'http://localhost:27123';
 const OBSIDIAN_REST_API_KEY = process.env.OBSIDIAN_REST_API_KEY || '';
 
+app.set('trust proxy', 1); // Trust first proxy (Cloudflare tunnel)
 app.use(express.json());
 
-// No cache for all static files
+// No cache for sw.js only (SW manages caching for other assets)
 app.use((req, res, next) => {
-  res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
-  res.set('Pragma', 'no-cache');
+  if (req.path === '/sw.js') {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.set('Pragma', 'no-cache');
+  }
   next();
 });
 
@@ -43,6 +46,21 @@ app.use('/api', (req, res, next) => {
   if (req.path === '/health' || req.path.startsWith('/auth/google')) return next();
   auth(req, res, next);
 });
+
+// ---- Rate Limiting ----
+const rateLimitMsg = { error: 'Too many requests, please try again later' };
+const generalLimiter = rateLimit({ windowMs: 60 * 1000, max: 100, message: rateLimitMsg, standardHeaders: true, legacyHeaders: false });
+const aiLimiter = rateLimit({ windowMs: 60 * 1000, max: 20, message: rateLimitMsg, standardHeaders: true, legacyHeaders: false });
+const uploadLimiter = rateLimit({ windowMs: 60 * 1000, max: 10, message: rateLimitMsg, standardHeaders: true, legacyHeaders: false });
+const searchLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, message: rateLimitMsg, standardHeaders: true, legacyHeaders: false });
+
+app.use('/api', generalLimiter);
+app.use('/api/ai', aiLimiter);
+app.use('/api/rag', aiLimiter);
+app.use('/api/search/ai', aiLimiter);
+app.use('/api/upload', uploadLimiter);
+app.use('/api/search', searchLimiter);
+app.use('/api/vm/search', searchLimiter);
 
 // ---- Multer setup for image upload ----
 if (!fs.existsSync(ATTACHMENT_DIR)) {
@@ -232,6 +250,7 @@ app.post('/api/daily/:date', (req, res) => {
     result = appendToExisting(filePath, section, newEntry, tags);
   } else {
     result = createNewNote(filePath, date, section, newEntry, tags);
+    invalidateFileCache();
   }
 
   res.json({ success: true, date, section, ...result });
@@ -955,12 +974,24 @@ async function executeDeleteNote(args) {
     const encodedPath = encodeURIComponent(args.path).replace(/%2F/g, '/');
     const res = await obsidianApi('DELETE', `/vault/${encodedPath}`);
     if (res.ok) {
+      invalidateFileCache();
       return { result: `"${args.path}" 파일을 삭제했습니다.` };
     }
     if (res.status === 404) return { result: `"${args.path}" 파일이 존재하지 않습니다.` };
     return { result: `삭제 실패: HTTP ${res.status}` };
   } catch (e) {
-    return { result: '삭제 실패: ' + e.message };
+    // Filesystem fallback
+    try {
+      const fullPath = path.join(VAULT_PATH, args.path);
+      if (fs.existsSync(fullPath)) {
+        fs.unlinkSync(fullPath);
+        invalidateFileCache();
+        return { result: `"${args.path}" 파일을 삭제했습니다. (파일시스템)` };
+      }
+      return { result: `"${args.path}" 파일이 존재하지 않습니다.` };
+    } catch (e2) {
+      return { result: '삭제 실패: ' + e2.message };
+    }
   }
 }
 
@@ -982,7 +1013,19 @@ async function executeAppendToNote(args) {
     }
     return { result: `내용 추가 실패: HTTP ${writeRes.status}` };
   } catch (e) {
-    return { result: '내용 추가 실패: ' + e.message };
+    // Filesystem fallback
+    try {
+      const fullPath = path.join(VAULT_PATH, args.path);
+      if (fs.existsSync(fullPath)) {
+        const existing = fs.readFileSync(fullPath, 'utf-8');
+        const updated = existing.trimEnd() + '\n\n' + args.content + '\n';
+        fs.writeFileSync(fullPath, updated, 'utf-8');
+        return { result: `"${args.path}"에 내용을 추가했습니다. (파일시스템)` };
+      }
+      return { result: `"${args.path}" 파일을 찾을 수 없습니다.` };
+    } catch (e2) {
+      return { result: '내용 추가 실패: ' + e2.message };
+    }
   }
 }
 
@@ -1041,8 +1084,8 @@ async function executeObsidianCommand(args) {
 // Build Gemini conversation history from client history array
 function buildContents(history, currentMessage) {
   const contents = [];
-  // Include up to 10 recent turns from history
-  const trimmed = (history || []).slice(-20); // 20 items = 10 user+model pairs max
+  // Include up to 20 recent turns from history
+  const trimmed = (history || []).slice(-40); // 40 items = 20 user+model pairs max
   for (const msg of trimmed) {
     if (msg.role === 'user' || msg.role === 'model') {
       contents.push({ role: msg.role, parts: [{ text: msg.text }] });
@@ -1231,7 +1274,7 @@ app.post('/api/rag/reindex', async (req, res) => {
   }
 
   try {
-    const allFiles = getAllMdFiles(VAULT_PATH);
+    const allFiles = getAllMdFilesCached();
     const vectors = [];
     let processed = 0;
     
@@ -1328,11 +1371,28 @@ const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || `http://localhost:${PORT}/api/auth/google/callback`;
 const GOOGLE_TOKEN_FILE = path.join(VAULT_PATH, '.google-token.json');
 
-// Check authentication status
-app.get('/api/calendar/status', (req, res) => {
+// Check authentication status (with actual token validation)
+app.get('/api/calendar/status', async (req, res) => {
   const hasEnv = !!GOOGLE_CLIENT_ID && !!GOOGLE_CLIENT_SECRET;
-  const connected = fs.existsSync(GOOGLE_TOKEN_FILE);
-  res.json({ connected, hasEnv });
+  if (!fs.existsSync(GOOGLE_TOKEN_FILE)) {
+    return res.json({ connected: false, hasEnv, reason: 'no_token' });
+  }
+  try {
+    const token = await getAccessToken();
+    if (!token) {
+      return res.json({ connected: false, hasEnv, reason: 'token_expired' });
+    }
+    // Quick validation: hit a lightweight Calendar API endpoint
+    const testRes = await fetch('https://www.googleapis.com/calendar/v3/colors', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (testRes.ok) {
+      return res.json({ connected: true, hasEnv });
+    }
+    return res.json({ connected: false, hasEnv, reason: 'token_invalid' });
+  } catch (e) {
+    return res.json({ connected: false, hasEnv, reason: 'error' });
+  }
 });
 
 // Start OAuth flow
@@ -1415,7 +1475,13 @@ async function getAccessToken() {
         fs.writeFileSync(GOOGLE_TOKEN_FILE, JSON.stringify(tokens), 'utf-8');
         console.log('[Calendar] Token refreshed');
       } else {
-        console.error('[Calendar] Token refresh failed:', await refreshRes.text());
+        const errText = await refreshRes.text();
+        console.error('[Calendar] Token refresh failed:', errText);
+        // Detect revoked or invalid grant — delete stale token file
+        if (errText.includes('invalid_grant') || errText.includes('Token has been revoked')) {
+          console.log('[Calendar] Token revoked — removing token file');
+          try { fs.unlinkSync(GOOGLE_TOKEN_FILE); } catch (_) {}
+        }
         return null;
       }
     } catch (e) {
@@ -1496,6 +1562,30 @@ app.post('/api/calendar/add', async (req, res) => {
 // ============================================================
 // Full-text search across entire vault
 // ============================================================
+
+// ---- File index cache (5-minute TTL) ----
+let _mdFileCache = null;
+let _mdFileCacheTime = 0;
+const MD_FILE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function getAllMdFilesCached() {
+  const now = Date.now();
+  if (_mdFileCache && (now - _mdFileCacheTime) < MD_FILE_CACHE_TTL) {
+    console.log('[CACHE] File index cache hit (%d files)', _mdFileCache.length);
+    return _mdFileCache;
+  }
+  console.log('[CACHE] File index cache miss — scanning vault...');
+  _mdFileCache = getAllMdFiles(VAULT_PATH);
+  _mdFileCacheTime = now;
+  console.log('[CACHE] Indexed %d .md files', _mdFileCache.length);
+  return _mdFileCache;
+}
+
+function invalidateFileCache() {
+  _mdFileCache = null;
+  _mdFileCacheTime = 0;
+}
+
 function getAllMdFiles(dir, fileList) {
   fileList = fileList || [];
   const items = fs.readdirSync(dir);
@@ -1522,7 +1612,7 @@ app.get('/api/search', (req, res) => {
 
   let allFiles;
   if (scope === 'all') {
-    allFiles = getAllMdFiles(VAULT_PATH);
+    allFiles = getAllMdFilesCached();
   } else {
     // Daily notes only
     if (!fs.existsSync(DAILY_DIR)) return res.json({ results: [], query: q, total: 0 });
@@ -1606,7 +1696,7 @@ app.get('/api/search/ai', async (req, res) => {
     const scope = req.query.scope || 'daily';
     let allFiles;
     if (scope === 'all') {
-      allFiles = getAllMdFiles(VAULT_PATH);
+      allFiles = getAllMdFilesCached();
     } else {
       if (!fs.existsSync(DAILY_DIR)) return res.json({ results: [], query: q, keywords, total: 0 });
       allFiles = fs.readdirSync(DAILY_DIR)
@@ -1916,9 +2006,22 @@ app.delete('/api/vm/delete', async (req, res) => {
     const encoded = encodeURIComponent(p).replace(/%2F/g, '/');
     const r = await obsidianApi('DELETE', `/vault/${encoded}`);
     if (!r.ok) return res.status(r.status).json({ error: `HTTP ${r.status}` });
+    invalidateFileCache();
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    // Filesystem fallback
+    try {
+      const safePath = (req.query.path || '').replace(/\.\./g, '');
+      const fullPath = path.join(VAULT_PATH, safePath);
+      if (fs.existsSync(fullPath)) {
+        fs.unlinkSync(fullPath);
+        invalidateFileCache();
+        return res.json({ ok: true });
+      }
+      return res.status(404).json({ error: 'File not found' });
+    } catch (e2) {
+      res.status(500).json({ error: e2.message });
+    }
   }
 });
 
@@ -2120,6 +2223,26 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`  Gemini:  ${GEMINI_API_KEY && GEMINI_API_KEY !== 'your_key_here' ? 'configured' : 'not configured'}`);
   console.log(`  Obsidian API: ${OBSIDIAN_REST_API_KEY ? OBSIDIAN_REST_URL : 'not configured'}`);
   console.log(`  Uploads: ${ATTACHMENT_DIR}\n`);
+
+  // Check Obsidian REST API connectivity
+  if (OBSIDIAN_REST_API_KEY) {
+    fetch(`${OBSIDIAN_REST_URL}/`, {
+      headers: { 'Authorization': `Bearer ${OBSIDIAN_REST_API_KEY}` }
+    }).then(function (r) {
+      if (r.ok) console.log('  Obsidian: connected ✓');
+      else console.log('  Obsidian: responded but HTTP ' + r.status + ' (filesystem fallback active)');
+    }).catch(function () {
+      console.log('  Obsidian: not reachable (filesystem fallback active)');
+    });
+  } else {
+    console.log('  Obsidian: API key not set (filesystem-only mode)');
+  }
+
+  // Pre-warm file index cache
+  try {
+    const cached = getAllMdFilesCached();
+    console.log(`  File cache: ${cached.length} .md files indexed`);
+  } catch (e) { console.log('  File cache: warm-up failed -', e.message); }
 
   // Show LAN IP
   const os = require('os');

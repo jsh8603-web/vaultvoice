@@ -31,6 +31,15 @@ function esc(s) {
   return d.innerHTML;
 }
 
+function showToast(message, type) {
+  type = type || 'info';
+  var el = document.createElement('div');
+  el.className = 'vv-toast ' + type;
+  el.textContent = message;
+  document.body.appendChild(el);
+  setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 3200);
+}
+
 function fmt(d) { return d.toISOString().slice(0, 10); }
 
 function fmtDisplay(d) {
@@ -352,6 +361,53 @@ var jarvisIsSending = false;
 var jarvisTTSActive = false;
 var jarvisRecog = null;
 
+// ---- Jarvis History Persistence (localStorage) ----
+var JARVIS_STORAGE_KEY = 'vv_jarvis_history';
+var JARVIS_STORAGE_MAX = 200 * 1024; // 200KB
+
+function saveJarvisHistory() {
+  try {
+    var json = JSON.stringify(jarvisChatHistory);
+    if (json.length > JARVIS_STORAGE_MAX) {
+      // Trim oldest entries until under limit
+      var trimmed = jarvisChatHistory.slice(-40);
+      json = JSON.stringify(trimmed);
+    }
+    localStorage.setItem(JARVIS_STORAGE_KEY, json);
+  } catch (e) { /* storage full — ignore */ }
+}
+
+function loadJarvisHistory() {
+  try {
+    var raw = localStorage.getItem(JARVIS_STORAGE_KEY);
+    if (raw) {
+      var parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (e) { /* corrupt — ignore */ }
+  return [];
+}
+
+function clearJarvisHistory() {
+  localStorage.removeItem(JARVIS_STORAGE_KEY);
+}
+
+function exportJarvisHistory() {
+  if (!jarvisChatHistory.length) return;
+  var lines = jarvisChatHistory.map(function (item) {
+    var label = item.role === 'user' ? '나' : 'Jarvis';
+    return '[' + label + '] ' + item.text;
+  });
+  var text = 'Jarvis 대화 내보내기 (' + new Date().toLocaleString('ko-KR') + ')\n' +
+    '='.repeat(40) + '\n\n' + lines.join('\n\n');
+  var blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'jarvis-chat-' + new Date().toISOString().slice(0, 10) + '.txt';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 // Jarvis Floating Button (created dynamically)
 var jarvisBtn = document.createElement('button');
 jarvisBtn.id = 'jarvis-btn';
@@ -391,10 +447,30 @@ function initJarvis() {
   // Reset conversation
   jarvisReset.onclick = function () {
     jarvisChatHistory = [];
+    clearJarvisHistory();
     jarvisChat.innerHTML = '';
     addJarvisWelcome();
     setJarvisStatus('');
   };
+
+  // Export button
+  var jarvisExport = document.getElementById('jarvis-export');
+  if (jarvisExport) {
+    jarvisExport.onclick = exportJarvisHistory;
+  }
+
+  // Restore saved history
+  var saved = loadJarvisHistory();
+  if (saved.length > 0) {
+    jarvisChatHistory = saved;
+    // Remove welcome and re-render bubbles
+    jarvisChat.innerHTML = '';
+    for (var i = 0; i < saved.length; i++) {
+      var item = saved[i];
+      var type = item.role === 'user' ? 'user' : 'bot';
+      addJarvisBubble(item.text, type);
+    }
+  }
 
   // Mic
   jarvisMic.onclick = toggleJarvisMic;
@@ -429,10 +505,11 @@ function closeJarvis() {
 // ---- Chat History Management ----
 function addToJarvisHistory(role, text) {
   jarvisChatHistory.push({ role: role, text: text });
-  // Keep max 20 turns (40 items)
-  if (jarvisChatHistory.length > 40) {
-    jarvisChatHistory = jarvisChatHistory.slice(-40);
+  // Keep max 30 turns (60 items)
+  if (jarvisChatHistory.length > 60) {
+    jarvisChatHistory = jarvisChatHistory.slice(-60);
   }
+  saveJarvisHistory();
 }
 
 // ---- Sending Messages ----
@@ -943,14 +1020,16 @@ function loadSettings() {
   checkCalendarStatus();
 }
 
-function checkCalendarStatus() {
+var _calWasConnected = false;
+
+function checkCalendarStatus(silent) {
   api('/calendar/status')
     .then(function(r) { return r.json(); })
     .then(function(d) {
       var st = document.getElementById('cal-status');
       var btn = document.getElementById('cal-connect-btn');
       var msg = document.getElementById('cal-msg');
-      
+
       if(d.connected) {
         st.textContent = '연결됨';
         st.className = 'badge ok';
@@ -958,6 +1037,7 @@ function checkCalendarStatus() {
         st.style.color = '#fff';
         btn.textContent = '재연결';
         msg.style.display = 'none';
+        _calWasConnected = true;
       } else if (!d.hasEnv) {
         st.textContent = '설정 필요';
         st.className = 'badge err';
@@ -971,7 +1051,17 @@ function checkCalendarStatus() {
         st.style.color = 'var(--text2)';
         btn.textContent = '계정 연결';
         btn.disabled = false;
-        msg.style.display = 'none';
+        // Show toast if token was previously connected but now expired/revoked
+        if (_calWasConnected && !silent) {
+          showToast('캘린더 연결이 만료되었습니다. 재연결이 필요합니다.', 'warn');
+        }
+        if (d.reason === 'token_expired' || d.reason === 'token_invalid') {
+          msg.textContent = '토큰이 만료/무효화되었습니다. 재연결해주세요.';
+          msg.style.display = '';
+        } else {
+          msg.style.display = 'none';
+        }
+        _calWasConnected = false;
       }
     })
     .catch(function() {});
@@ -980,6 +1070,9 @@ function checkCalendarStatus() {
 document.getElementById('cal-connect-btn').addEventListener('click', function() {
   window.open('/api/auth/google', '_blank', 'width=500,height=600');
 });
+
+// Auto-check calendar status every 10 minutes
+setInterval(function () { checkCalendarStatus(); }, 10 * 60 * 1000);
 
 // ============================================================
 // Markdown renderer
@@ -2072,5 +2165,10 @@ function renderTestResults(checks) {
 // Service Worker
 // ============================================================
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').catch(function () { });
+  navigator.serviceWorker.register('/sw.js').then(function (reg) {
+    // Check for updates every 30 minutes
+    setInterval(function () {
+      reg.update().catch(function () { });
+    }, 30 * 60 * 1000);
+  }).catch(function () { });
 }

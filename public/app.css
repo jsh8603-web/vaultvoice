@@ -424,6 +424,23 @@ textarea.input { resize: vertical; min-height: 140px; line-height: 1.5; }
   animation: mic-pulse 1.2s infinite;
 }
 
+/* ============ Toast Notifications ============ */
+.vv-toast {
+  position: fixed; top: calc(var(--safe-top) + 52px); left: 50%;
+  transform: translateX(-50%); z-index: 500;
+  padding: 12px 20px; border-radius: 12px;
+  font-size: 14px; font-weight: 500; max-width: 90%;
+  text-align: center; pointer-events: none;
+  animation: toast-in 0.3s ease, toast-out 0.3s ease 2.7s forwards;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+}
+.vv-toast.info { background: var(--blue); color: #fff; }
+.vv-toast.warn { background: var(--orange); color: #fff; }
+.vv-toast.error { background: var(--red); color: #fff; }
+.vv-toast.success { background: var(--green); color: #fff; }
+@keyframes toast-in { from { opacity: 0; transform: translateX(-50%) translateY(-16px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+@keyframes toast-out { from { opacity: 1; } to { opacity: 0; } }
+
 /* ============ Jarvis Mobile Responsive ============ */
 @media (max-width: 480px) {
   .jarvis-bubble { max-width: 90%; }
