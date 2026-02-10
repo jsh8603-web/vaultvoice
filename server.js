@@ -80,8 +80,8 @@ const upload = multer({
   storage,
   limits: { fileSize: MAX_UPLOAD_SIZE },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) cb(null, true);
-    else cb(new Error('Only image files allowed'));
+    if (file.mimetype.startsWith('image/') || file.mimetype.startsWith('audio/')) cb(null, true);
+    else cb(new Error('Only image or audio files allowed'));
   }
 });
 
@@ -214,7 +214,7 @@ app.post('/api/daily/:date', (req, res) => {
     return res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD' });
   }
 
-  const { content, tags = [], section = '메모', images = [], priority, due } = req.body;
+  const { content, tags = [], section = '메모', images = [], audios = [], priority, due } = req.body;
   if (!content || !content.trim()) {
     return res.status(400).json({ error: 'Content is required' });
   }
@@ -245,6 +245,13 @@ app.post('/api/daily/:date', (req, res) => {
     }
   }
 
+  // Add audio sub-items
+  if (audios && audios.length > 0) {
+    for (const aud of audios) {
+      newEntry += `\n  - 🎙️ ![[${ATTACHMENT_DIR_NAME}/${aud}]]`;
+    }
+  }
+
   let result;
   if (fs.existsSync(filePath)) {
     result = appendToExisting(filePath, section, newEntry, tags);
@@ -257,24 +264,25 @@ app.post('/api/daily/:date', (req, res) => {
 });
 
 // ============================================================
-// Image upload
+// File upload (image or audio)
 // ============================================================
 app.post('/api/upload', (req, res, next) => {
   console.log('[UPLOAD] Request received, content-type:', req.headers['content-type']);
-  upload.single('image')(req, res, (err) => {
+  upload.any()(req, res, (err) => {
     if (err) {
       console.error('[UPLOAD] Multer error:', err.message);
       return res.status(400).json({ error: err.message });
     }
-    if (!req.file) {
+    const file = req.files && req.files[0];
+    if (!file) {
       console.error('[UPLOAD] No file in request');
-      return res.status(400).json({ error: 'No image file provided' });
+      return res.status(400).json({ error: 'No file provided' });
     }
-    console.log('[UPLOAD] Success:', req.file.filename, req.file.size, 'bytes');
+    console.log('[UPLOAD] Success:', file.filename, file.size, 'bytes');
     res.json({
       success: true,
-      filename: req.file.filename,
-      path: `${ATTACHMENT_DIR_NAME}/${req.file.filename}`
+      filename: file.filename,
+      path: `${ATTACHMENT_DIR_NAME}/${file.filename}`
     });
   });
 });

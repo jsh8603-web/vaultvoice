@@ -10,6 +10,10 @@ var curSection = localStorage.getItem('vv_sec') || '메모';
 var myTags = [];
 var allTags = [];
 var pendingImages = []; // { file, objectUrl, serverId }
+var pendingAudios = []; // { blob, objectUrl, serverId }
+var audioRecorder = null;
+var audioRecordingTimer = null;
+var audioRecordingStart = 0;
 
 // ---- URL key param auto-login ----
 (function () {
@@ -350,6 +354,125 @@ style.textContent = `
 }
 `;
 document.head.appendChild(style);
+
+// ============================================================
+// Audio Recording
+// ============================================================
+function toggleAudioRecording() {
+  if (audioRecorder && audioRecorder.state === 'recording') {
+    stopAudioRecording();
+  } else {
+    startAudioRecording();
+  }
+}
+
+function startAudioRecording() {
+  var btn = document.getElementById('audio-rec-btn');
+  var status = document.getElementById('audio-rec-status');
+
+  navigator.mediaDevices.getUserMedia({ audio: true })
+    .then(function (stream) {
+      var mimeType = 'audio/webm';
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'audio/mp4';
+        if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = '';
+      }
+      var options = mimeType ? { mimeType: mimeType } : {};
+      audioRecorder = new MediaRecorder(stream, options);
+      var chunks = [];
+
+      audioRecorder.ondataavailable = function (e) {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      audioRecorder.onstop = function () {
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        var blob = new Blob(chunks, { type: audioRecorder.mimeType || 'audio/webm' });
+        var objectUrl = URL.createObjectURL(blob);
+        pendingAudios.push({ blob: blob, objectUrl: objectUrl, serverId: null });
+        renderAudioPreviews();
+        btn.classList.remove('recording');
+        btn.title = '녹음 시작';
+        status.textContent = '';
+        clearInterval(audioRecordingTimer);
+      };
+
+      audioRecorder.start();
+      audioRecordingStart = Date.now();
+      btn.classList.add('recording');
+      btn.title = '녹음 중지';
+      status.textContent = '0:00';
+
+      audioRecordingTimer = setInterval(function () {
+        var elapsed = Math.floor((Date.now() - audioRecordingStart) / 1000);
+        var m = Math.floor(elapsed / 60);
+        var s = elapsed % 60;
+        status.textContent = m + ':' + (s < 10 ? '0' : '') + s;
+      }, 500);
+    })
+    .catch(function (e) {
+      showToast('마이크 접근 실패: ' + e.message, 'error');
+    });
+}
+
+function stopAudioRecording() {
+  if (audioRecorder && audioRecorder.state === 'recording') {
+    audioRecorder.stop();
+  }
+}
+
+function removeAudio(idx) {
+  if (pendingAudios[idx]) {
+    URL.revokeObjectURL(pendingAudios[idx].objectUrl);
+    pendingAudios.splice(idx, 1);
+    renderAudioPreviews();
+  }
+}
+
+function renderAudioPreviews() {
+  var el = document.getElementById('audio-preview');
+  el.innerHTML = pendingAudios.map(function (aud, idx) {
+    return '<div class="audio-preview-item">' +
+      '<audio controls src="' + aud.objectUrl + '"></audio>' +
+      '<button class="audio-remove" data-idx="' + idx + '">&times;</button>' +
+      '</div>';
+  }).join('');
+  el.querySelectorAll('.audio-remove').forEach(function (btn) {
+    btn.addEventListener('click', function () { removeAudio(parseInt(btn.getAttribute('data-idx'))); });
+  });
+}
+
+function uploadAudios() {
+  var uploaded = [];
+  var chain = Promise.resolve();
+
+  pendingAudios.forEach(function (aud) {
+    chain = chain.then(function () {
+      if (aud.serverId) {
+        uploaded.push(aud.serverId);
+        return;
+      }
+      var ext = '.webm';
+      if (aud.blob.type && aud.blob.type.includes('mp4')) ext = '.mp4';
+      var fd = new FormData();
+      fd.append('audio', aud.blob, 'recording' + ext);
+      return apiUpload('/upload', fd).then(function (res) {
+        if (res.ok) {
+          return res.json().then(function (data) {
+            aud.serverId = data.filename;
+            uploaded.push(data.filename);
+          });
+        } else {
+          console.error('Audio upload error:', res.status);
+        }
+      }).catch(function (e) {
+        console.error('Audio upload failed:', e);
+      });
+    });
+  });
+
+  return chain.then(function () { return uploaded; });
+}
 
 // ============================================================
 // Phase 2: Jarvis (Voice Assistant) — Refactored
@@ -768,8 +891,8 @@ function uploadImages() {
 function doSave() {
   var text = document.getElementById('memo-text').value.trim();
   var fb = document.getElementById('save-fb');
-  if (!text && pendingImages.length === 0) { document.getElementById('memo-text').focus(); return; }
-  if (!text) text = '(이미지)';
+  if (!text && pendingImages.length === 0 && pendingAudios.length === 0) { document.getElementById('memo-text').focus(); return; }
+  if (!text) text = pendingAudios.length > 0 ? '(음성 녹음)' : '(이미지)';
 
   var saveBtn = document.getElementById('save-btn');
   saveBtn.disabled = true;
@@ -817,14 +940,28 @@ function proceedSave(text, saveBtn, fb) {
     uploadPromise = Promise.resolve([]);
   }
 
-  uploadPromise.then(function (imageFiles) {
+  // Step 2: upload audios if any
+  var audioUploadPromise;
+  if (pendingAudios.length > 0) {
+    audioUploadPromise = uploadAudios().catch(function (e) {
+      console.error('Audio upload error:', e);
+      return [];
+    });
+  } else {
+    audioUploadPromise = Promise.resolve([]);
+  }
+
+  Promise.all([uploadPromise, audioUploadPromise]).then(function (results) {
+    var imageFiles = results[0];
+    var audioFiles = results[1];
     saveBtn.textContent = '저장 중...';
 
     var body = {
       content: text,
       tags: myTags,
       section: curSection,
-      images: imageFiles
+      images: imageFiles,
+      audios: audioFiles
     };
 
     if (curSection === '오늘할일') {
@@ -841,6 +978,7 @@ function proceedSave(text, saveBtn, fb) {
         var msg = '저장 완료!';
         if (pendingImages.length > 0 && imageFiles.length === 0) msg += ' (이미지 업로드 실패)';
         else if (imageFiles.length > 0) msg += ' (이미지 ' + imageFiles.length + '개 포함)';
+        if (audioFiles.length > 0) msg += ' (음성 ' + audioFiles.length + '개 포함)';
         fb.textContent = msg;
         fb.className = 'feedback ok';
         fb.style.display = '';
@@ -849,6 +987,9 @@ function proceedSave(text, saveBtn, fb) {
         pendingImages.forEach(function (img) { URL.revokeObjectURL(img.objectUrl); });
         pendingImages = [];
         renderImagePreviews();
+        pendingAudios.forEach(function (aud) { URL.revokeObjectURL(aud.objectUrl); });
+        pendingAudios = [];
+        renderAudioPreviews();
         document.getElementById('todo-due').value = '';
         if (navigator.vibrate) navigator.vibrate(50);
       } else {
@@ -1090,6 +1231,11 @@ function renderMd(md) {
   h = h.replace(/- \[ \] (.+)/g, '<li style="list-style:none"><input type="checkbox" disabled> $1</li>');
   // Regular list items
   h = h.replace(/^- (.+)$/gm, '<li>$1</li>');
+  // Audio embeds: ![[file.webm]] or .mp3, .wav, .m4a, .ogg, .mp4
+  h = h.replace(/!\[\[([^\]]+\.(webm|mp3|wav|m4a|ogg|mp4))\]\]/gi, function (match, p) {
+    var fname = p.split('/').pop();
+    return '<audio controls style="width:100%;margin:4px 0"><source src="/api/attachments/' + encodeURIComponent(fname) + '"></audio>';
+  });
   // Image embeds
   h = h.replace(/!\[\[([^\]]+)\]\]/g, function (match, p) {
     var fname = p.split('/').pop();
@@ -1768,6 +1914,9 @@ document.addEventListener('DOMContentLoaded', function () {
     handleImageSelect(e.target.files);
     e.target.value = '';
   });
+
+  // Audio recording button
+  document.getElementById('audio-rec-btn').addEventListener('click', toggleAudioRecording);
 
   // History search — full text + AI
   document.getElementById('search-btn').addEventListener('click', doSearch);

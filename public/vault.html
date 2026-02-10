@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#11111b">
-<title>Vault Manager</title>
+<title>볼트 관리</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -239,10 +239,10 @@ input:focus,textarea:focus{border-color:var(--blue)}
 <div id="app">
   <!-- Header -->
   <div id="header">
-    <a href="/" class="hdr-btn" style="text-decoration:none;font-size:22px" title="Home">&#127968;</a>
-    <input type="text" id="search-box" placeholder="Search..." autocomplete="off" autocorrect="off" autocapitalize="off">
-    <button class="hdr-btn" onclick="showCreateModal()" title="New">&#10133;</button>
-    <button class="hdr-btn" onclick="toggleCmdPalette()" title="Commands">&#9889;</button>
+    <a href="/" class="hdr-btn" style="text-decoration:none;font-size:22px" title="홈">&#127968;</a>
+    <input type="text" id="search-box" placeholder="검색..." autocomplete="off" autocorrect="off" autocapitalize="off">
+    <button class="hdr-btn" onclick="showCreateModal()" title="새 노트">&#10133;</button>
+    <button class="hdr-btn" onclick="toggleCmdPalette()" title="명령어">&#9889;</button>
   </div>
 
   <!-- Search Results -->
@@ -254,20 +254,24 @@ input:focus,textarea:focus{border-color:var(--blue)}
     <div id="tree-panel" class="panel active">
       <div id="tree-header">
         <span style="font-size:15px">&#128194;</span>
-        <span>Explorer</span>
+        <span>탐색기</span>
         <div style="flex:1"></div>
-        <button style="font-size:16px;color:var(--subtext);padding:4px" onclick="loadTree('')" title="Refresh">&#8635;</button>
+        <button style="font-size:16px;color:var(--subtext);padding:4px" onclick="loadTree('')" title="새로고침">&#8635;</button>
       </div>
+      <details style="padding:6px 12px;font-size:12px;color:var(--subtext);border-bottom:1px solid var(--border)">
+        <summary style="cursor:pointer">사용법</summary>
+        <p style="margin-top:4px;line-height:1.5">폴더를 클릭하면 하위 항목이 표시됩니다. .md 파일을 클릭하면 노트가 열립니다.</p>
+      </details>
       <div id="tree-list"></div>
     </div>
 
     <!-- Note -->
     <div id="center-panel" class="panel hidden">
       <div id="note-toolbar">
-        <span id="note-path">Select a note</span>
+        <span id="note-path">노트를 선택하세요</span>
         <div style="flex:1"></div>
-        <button class="tb-btn active" id="btn-view" onclick="setMode('view')">View</button>
-        <button class="tb-btn" id="btn-edit" onclick="setMode('edit')">Edit</button>
+        <button class="tb-btn active" id="btn-view" onclick="setMode('view')">보기</button>
+        <button class="tb-btn" id="btn-edit" onclick="setMode('edit')">편집</button>
         <button class="tb-btn" id="btn-save" onclick="saveNote()" style="display:none">&#128190;</button>
         <button class="tb-btn" onclick="showMoveModal()">&#128193;</button>
         <button class="tb-btn" style="color:var(--red)" onclick="deleteNote()">&#128465;</button>
@@ -276,7 +280,11 @@ input:focus,textarea:focus{border-color:var(--blue)}
         <div id="note-view">
           <div class="empty-state">
             <div class="icon">&#128209;</div>
-            <p>Select a note from Explorer</p>
+            <p>탐색기에서 노트를 선택하세요</p>
+            <details style="font-size:12px;color:var(--subtext);text-align:left;margin-top:8px">
+              <summary style="cursor:pointer;text-align:center">사용법</summary>
+              <p style="margin-top:4px;line-height:1.5">탐색기에서 노트를 클릭하거나, 상단 검색창(Ctrl+K)으로 검색하세요.<br>보기/편집 모드 전환(Ctrl+E), 저장(Ctrl+S) 단축키를 사용할 수 있습니다.</p>
+            </details>
           </div>
         </div>
         <textarea id="note-edit" spellcheck="false"></textarea>
@@ -285,10 +293,14 @@ input:focus,textarea:focus{border-color:var(--blue)}
 
     <!-- Info -->
     <div id="info-panel" class="panel hidden">
-      <div id="info-header">&#8505;&#65039; Info</div>
+      <div id="info-header">&#8505;&#65039; 정보</div>
       <div id="info-content">
         <div class="empty-state" style="height:auto;padding:30px">
-          <p style="font-size:13px">Open a note to see info</p>
+          <p style="font-size:13px">노트를 열면 정보가 표시됩니다</p>
+          <details style="font-size:12px;color:var(--subtext);text-align:left;margin-top:8px">
+            <summary style="cursor:pointer;text-align:center">사용법</summary>
+            <p style="margin-top:4px;line-height:1.5">노트를 열면 경로, 크기, 태그, 백링크 정보가 표시됩니다.<br>하단에서 내용을 추가로 덧붙일 수 있습니다.</p>
+          </details>
         </div>
       </div>
     </div>
@@ -296,19 +308,19 @@ input:focus,textarea:focus{border-color:var(--blue)}
 
   <!-- Recent -->
   <div id="footer">
-    <span id="footer-label">Recent:</span>
+    <span id="footer-label">최근:</span>
   </div>
 
   <!-- Mobile bottom nav -->
   <div id="mob-nav">
     <button class="nav-tab active" data-panel="tree-panel" onclick="switchPanel('tree-panel')">
-      <span class="nav-icon">&#128194;</span><span>Explorer</span>
+      <span class="nav-icon">&#128194;</span><span>탐색기</span>
     </button>
     <button class="nav-tab" data-panel="center-panel" onclick="switchPanel('center-panel')">
-      <span class="nav-icon">&#128196;</span><span>Note</span>
+      <span class="nav-icon">&#128196;</span><span>노트</span>
     </button>
     <button class="nav-tab" data-panel="info-panel" onclick="switchPanel('info-panel')">
-      <span class="nav-icon">&#8505;&#65039;</span><span>Info</span>
+      <span class="nav-icon">&#8505;&#65039;</span><span>정보</span>
     </button>
   </div>
 </div>
@@ -316,14 +328,14 @@ input:focus,textarea:focus{border-color:var(--blue)}
 <!-- Create Modal -->
 <div class="modal-overlay" id="modal-create">
   <div class="modal">
-    <h3>&#10133; New Note</h3>
-    <label>Path</label>
-    <input type="text" id="create-path" placeholder="folder/note.md" autocomplete="off" autocorrect="off" autocapitalize="off">
-    <label>Content</label>
-    <textarea id="create-content" placeholder="# New Note"></textarea>
+    <h3>&#10133; 새 노트</h3>
+    <label>경로</label>
+    <input type="text" id="create-path" placeholder="폴더/노트이름.md" autocomplete="off" autocorrect="off" autocapitalize="off">
+    <label>내용</label>
+    <textarea id="create-content" placeholder="# 새 노트"></textarea>
     <div class="modal-btns">
-      <button class="btn-cancel" onclick="closeModal('modal-create')">Cancel</button>
-      <button class="btn-primary" onclick="createNote()">Create</button>
+      <button class="btn-cancel" onclick="closeModal('modal-create')">취소</button>
+      <button class="btn-primary" onclick="createNote()">생성</button>
     </div>
   </div>
 </div>
@@ -331,14 +343,14 @@ input:focus,textarea:focus{border-color:var(--blue)}
 <!-- Move Modal -->
 <div class="modal-overlay" id="modal-move">
   <div class="modal">
-    <h3>&#128193; Move / Rename</h3>
-    <label>Current</label>
+    <h3>&#128193; 이동 / 이름변경</h3>
+    <label>현재 경로</label>
     <input type="text" id="move-from" readonly style="opacity:0.6">
-    <label>New path</label>
-    <input type="text" id="move-to" placeholder="new/path/note.md" autocomplete="off" autocorrect="off" autocapitalize="off">
+    <label>새 경로</label>
+    <input type="text" id="move-to" placeholder="새/경로/노트.md" autocomplete="off" autocorrect="off" autocapitalize="off">
     <div class="modal-btns">
-      <button class="btn-cancel" onclick="closeModal('modal-move')">Cancel</button>
-      <button class="btn-primary" onclick="moveNote()">Move</button>
+      <button class="btn-cancel" onclick="closeModal('modal-move')">취소</button>
+      <button class="btn-primary" onclick="moveNote()">이동</button>
     </div>
   </div>
 </div>
@@ -346,9 +358,13 @@ input:focus,textarea:focus{border-color:var(--blue)}
 <!-- Command Palette -->
 <div id="cmd-palette">
   <div id="cmd-header">
-    <input type="text" id="cmd-filter" placeholder="Search commands..." autocomplete="off" autocorrect="off" autocapitalize="off">
+    <input type="text" id="cmd-filter" placeholder="명령어 검색..." autocomplete="off" autocorrect="off" autocapitalize="off">
     <button id="cmd-close" onclick="toggleCmdPalette()">&times;</button>
   </div>
+  <details style="padding:6px 12px;font-size:12px;color:var(--subtext);border-bottom:1px solid var(--border)">
+    <summary style="cursor:pointer">사용법</summary>
+    <p style="margin-top:4px;line-height:1.5">Ctrl+P로 열기. Obsidian 명령어를 검색하고 실행할 수 있습니다.</p>
+  </details>
   <div id="cmd-list"></div>
 </div>
 
@@ -400,7 +416,7 @@ function switchPanel(id) {
 // ---- Tree ----
 async function loadTree(folder, container) {
   const target = container || document.getElementById('tree-list');
-  if (!container) target.innerHTML = '<div style="padding:16px;color:var(--subtext)">Loading...</div>';
+  if (!container) target.innerHTML = '<div style="padding:16px;color:var(--subtext)">로딩 중...</div>';
   try {
     const res = await api('GET', `/api/vm/browse?folder=${encodeURIComponent(folder)}`);
     const data = await res.json();
@@ -450,7 +466,7 @@ async function loadTree(folder, container) {
 async function openNote(p) {
   try {
     const res = await api('GET', `/api/vm/read?path=${encodeURIComponent(p)}`);
-    if (!res.ok) { toast('Failed to load'); return; }
+    if (!res.ok) { toast('로딩 실패'); return; }
     const data = await res.json();
     currentPath = p;
     currentContent = data.content;
@@ -464,7 +480,7 @@ async function openNote(p) {
     const treeEl = document.querySelector(`.tree-file[data-path="${CSS.escape(p)}"]`);
     if (treeEl) treeEl.classList.add('active');
   } catch (e) {
-    toast('Error: ' + e.message);
+    toast('오류: ' + e.message);
   }
 }
 
@@ -536,11 +552,11 @@ async function saveNote() {
   const content = document.getElementById('note-edit').value;
   try {
     const res = await api('PUT', '/api/vm/write', { path: currentPath, content });
-    if (!res.ok) { toast('Save failed'); return; }
+    if (!res.ok) { toast('저장 실패'); return; }
     currentContent = content;
     renderNote(content);
     setMode('view');
-    toast('Saved!');
+    toast('저장됨!');
     loadInfo(currentPath, content);
   } catch (e) { toast('Error: ' + e.message); }
 }
@@ -548,14 +564,14 @@ async function saveNote() {
 // ---- Delete ----
 async function deleteNote() {
   if (!currentPath) return;
-  if (!confirm(`Delete "${currentPath}"?`)) return;
+  if (!confirm(`"${currentPath}" 파일을 삭제하시겠습니까?`)) return;
   try {
     const res = await api('DELETE', `/api/vm/delete?path=${encodeURIComponent(currentPath)}`);
-    if (!res.ok) { toast('Delete failed'); return; }
-    toast('Deleted');
+    if (!res.ok) { toast('삭제 실패'); return; }
+    toast('삭제됨');
     currentPath = ''; currentContent = '';
-    document.getElementById('note-path').textContent = 'Select a note';
-    document.getElementById('note-view').innerHTML = '<div class="empty-state"><div class="icon">&#128209;</div><p>Note deleted</p></div>';
+    document.getElementById('note-path').textContent = '노트를 선택하세요';
+    document.getElementById('note-view').innerHTML = '<div class="empty-state"><div class="icon">&#128209;</div><p>노트가 삭제되었습니다</p></div>';
     document.getElementById('info-content').innerHTML = '';
     loadTree('');
     if (isMobile()) switchPanel('tree-panel');
@@ -565,7 +581,7 @@ async function deleteNote() {
 // ---- Create ----
 function showCreateModal() {
   document.getElementById('create-path').value = '';
-  document.getElementById('create-content').value = '# New Note\n\n';
+  document.getElementById('create-content').value = '# 새 노트\n\n';
   document.getElementById('modal-create').classList.add('show');
   setTimeout(() => document.getElementById('create-path').focus(), 100);
 }
@@ -573,13 +589,13 @@ function showCreateModal() {
 async function createNote() {
   const p = document.getElementById('create-path').value.trim();
   const c = document.getElementById('create-content').value;
-  if (!p) { toast('Path required'); return; }
+  if (!p) { toast('경로를 입력하세요'); return; }
   const notePath = p.endsWith('.md') ? p : p + '.md';
   try {
     const res = await api('PUT', '/api/vm/write', { path: notePath, content: c });
-    if (!res.ok) { toast('Create failed'); return; }
+    if (!res.ok) { toast('생성 실패'); return; }
     closeModal('modal-create');
-    toast('Created!');
+    toast('생성됨!');
     loadTree('');
     openNote(notePath);
     if (isMobile()) switchPanel('center-panel');
@@ -601,9 +617,9 @@ async function moveNote() {
   if (!to || from === to) { closeModal('modal-move'); return; }
   try {
     const res = await api('POST', '/api/vm/move', { from, to });
-    if (!res.ok) { toast('Move failed'); return; }
+    if (!res.ok) { toast('이동 실패'); return; }
     closeModal('modal-move');
-    toast('Moved!');
+    toast('이동됨!');
     loadTree('');
     openNote(to);
   } catch (e) { toast('Error: ' + e.message); }
@@ -624,7 +640,7 @@ async function doSearch(q) {
     const results = await res.json();
     const el = document.getElementById('search-results');
     if (!results.length) {
-      el.innerHTML = '<div class="sr-item"><div class="sr-title">No results</div></div>';
+      el.innerHTML = '<div class="sr-item"><div class="sr-title">결과 없음</div></div>';
       el.classList.add('show'); return;
     }
     el.innerHTML = results.slice(0, 20).map(r => {
@@ -657,7 +673,7 @@ async function searchAndOpen(name) {
       if (results.length > 0) { openNote(results[0].filename); return; }
     }
   } catch (e) { /* ignore */ }
-  toast(`"${name}" not found`);
+  toast(`"${name}" 찾을 수 없습니다`);
 }
 
 // ---- Info ----
@@ -665,13 +681,13 @@ async function loadInfo(p, content) {
   const el = document.getElementById('info-content');
   const filename = p.split('/').pop().replace('.md', '');
   let html = '';
-  html += `<div class="info-section"><h4>Path</h4><div class="val">${esc(p)}</div></div>`;
-  html += `<div class="info-section"><h4>Size</h4><div class="val">${content.length.toLocaleString()} chars</div></div>`;
-  html += `<div class="info-section"><h4>Tags</h4><div id="info-tags">Loading...</div></div>`;
-  html += `<div class="info-section"><h4>Backlinks</h4><div id="info-backlinks">Loading...</div></div>`;
-  html += `<div class="info-section"><h4>Append</h4>
-    <textarea id="append-area" placeholder="Content to append..."></textarea>
-    <button class="info-action-btn" onclick="appendContent()">&#10133; Append</button>
+  html += `<div class="info-section"><h4>경로</h4><div class="val">${esc(p)}</div></div>`;
+  html += `<div class="info-section"><h4>크기</h4><div class="val">${content.length.toLocaleString()}자</div></div>`;
+  html += `<div class="info-section"><h4>태그</h4><div id="info-tags">로딩 중...</div></div>`;
+  html += `<div class="info-section"><h4>백링크</h4><div id="info-backlinks">로딩 중...</div></div>`;
+  html += `<div class="info-section"><h4>내용 추가</h4>
+    <textarea id="append-area" placeholder="추가할 내용..."></textarea>
+    <button class="info-action-btn" onclick="appendContent()">&#10133; 추가</button>
   </div>`;
   el.innerHTML = html;
   loadTags(p);
@@ -685,12 +701,12 @@ async function loadTags(p) {
     if (!res.ok) { el.textContent = 'Error'; return; }
     const data = await res.json();
     if (!data.tags.length) {
-      el.innerHTML = '<span style="font-size:13px;color:var(--subtext)">No tags</span><br><button class="info-action-btn" onclick="promptAddTag()">&#10133; Add Tag</button>';
+      el.innerHTML = '<span style="font-size:13px;color:var(--subtext)">태그 없음</span><br><button class="info-action-btn" onclick="promptAddTag()">&#10133; 태그 추가</button>';
       return;
     }
     el.innerHTML = data.tags.map(t => `<span class="info-tag">#${esc(t)}</span>`).join('') +
-      '<br><button class="info-action-btn" onclick="promptAddTag()">&#10133; Add</button>' +
-      '<button class="info-action-btn" onclick="promptEditTags()" style="margin-top:4px">&#9998; Edit Tags</button>';
+      '<br><button class="info-action-btn" onclick="promptAddTag()">&#10133; 추가</button>' +
+      '<button class="info-action-btn" onclick="promptEditTags()" style="margin-top:4px">&#9998; 태그 편집</button>';
   } catch (e) { el.textContent = 'Error'; }
 }
 
@@ -700,7 +716,7 @@ async function loadBacklinks(name) {
     const res = await api('GET', `/api/vm/backlinks?name=${encodeURIComponent(name)}`);
     if (!res.ok) { el.textContent = 'Error'; return; }
     const results = await res.json();
-    if (!results.length) { el.innerHTML = '<span style="font-size:13px;color:var(--subtext)">No backlinks</span>'; return; }
+    if (!results.length) { el.innerHTML = '<span style="font-size:13px;color:var(--subtext)">백링크 없음</span>'; return; }
     el.innerHTML = results.slice(0, 15).map(r =>
       `<a class="backlink-item" onclick="openNote('${escAttr(r.filename)}');if(isMobile())switchPanel('center-panel')">${esc(r.filename)}</a>`
     ).join('');
@@ -708,14 +724,14 @@ async function loadBacklinks(name) {
 }
 
 async function promptAddTag() {
-  const tag = prompt('Tag name:');
+  const tag = prompt('태그 이름:');
   if (!tag || !currentPath) return;
   try {
     const res = await api('GET', `/api/vm/tags?path=${encodeURIComponent(currentPath)}`);
     const data = await res.json();
     const tags = [...data.frontmatterTags, tag.replace(/^#/, '')];
     await api('PUT', '/api/vm/tags', { path: currentPath, tags });
-    toast('Tag added');
+    toast('태그 추가됨');
     loadTags(currentPath);
   } catch (e) { toast('Error: ' + e.message); }
 }
@@ -725,11 +741,11 @@ async function promptEditTags() {
   try {
     const res = await api('GET', `/api/vm/tags?path=${encodeURIComponent(currentPath)}`);
     const data = await res.json();
-    const input = prompt('Edit tags (comma-separated):', data.frontmatterTags.join(', '));
+    const input = prompt('태그 편집 (쉼표로 구분):', data.frontmatterTags.join(', '));
     if (input === null) return;
     const tags = input.split(',').map(t => t.trim()).filter(Boolean);
     await api('PUT', '/api/vm/tags', { path: currentPath, tags });
-    toast('Tags updated');
+    toast('태그 수정됨');
     loadTags(currentPath);
   } catch (e) { toast('Error: ' + e.message); }
 }
@@ -745,12 +761,12 @@ async function appendContent() {
     const data = await readRes.json();
     const updated = data.content.trimEnd() + '\n\n' + content + '\n';
     const writeRes = await api('PUT', '/api/vm/write', { path: currentPath, content: updated });
-    if (!writeRes.ok) { toast('Append failed'); return; }
+    if (!writeRes.ok) { toast('추가 실패'); return; }
     currentContent = updated;
     renderNote(updated);
     document.getElementById('note-edit').value = updated;
     area.value = '';
-    toast('Appended!');
+    toast('추가됨!');
   } catch (e) { toast('Error: ' + e.message); }
 }
 
@@ -796,7 +812,7 @@ async function loadCommands() {
     allCommands = Array.isArray(cmds)
       ? cmds.map(c => ({ id: c.id, name: c.name || c.id }))
       : Object.entries(cmds).map(([id, info]) => ({ id, name: typeof info === 'string' ? info : (info.name || id) }));
-  } catch (e) { toast('Failed to load commands'); }
+  } catch (e) { toast('명령어 로딩 실패'); }
 }
 
 function filterCommands(q) {
@@ -818,8 +834,8 @@ async function execCommand(id) {
   document.getElementById('cmd-palette').classList.remove('show');
   try {
     const res = await api('POST', '/api/vm/command', { id });
-    if (!res.ok) { toast('Command failed'); return; }
-    toast(`Executed: ${id}`);
+    if (!res.ok) { toast('명령 실행 실패'); return; }
+    toast(`실행됨: ${id}`);
   } catch (e) { toast('Error: ' + e.message); }
 }
 

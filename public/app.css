@@ -186,6 +186,30 @@ textarea.input { resize: vertical; min-height: 140px; line-height: 1.5; }
   display: flex; align-items: center; justify-content: center;
 }
 
+/* ============ Audio Recording ============ */
+.audio-attach-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
+.audio-rec-btn { transition: all 0.2s; }
+.audio-rec-btn.recording {
+  background: var(--red); border-color: var(--red); color: #fff;
+  animation: mic-pulse 1.2s infinite;
+}
+.audio-rec-status { font-size: 13px; color: var(--text2); font-variant-numeric: tabular-nums; }
+.audio-preview-list { display: flex; flex-direction: column; gap: 8px; }
+.audio-preview-item {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg-card); border: 1px solid var(--sep);
+  border-radius: var(--radius); padding: 8px 12px;
+}
+.audio-preview-item audio { flex: 1; height: 36px; }
+.audio-preview-item .audio-remove {
+  width: 28px; height: 28px; border-radius: 50%;
+  background: none; border: 1px solid var(--sep);
+  color: var(--red); font-size: 16px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.audio-preview-item .audio-remove:active { background: rgba(255,59,48,0.1); }
+
 /* ============ Phase 3: Todo Management ============ */
 .todo-section-title { font-size: 15px; font-weight: 600; color: var(--blue); margin: 12px 0 8px; }
 .todo-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
