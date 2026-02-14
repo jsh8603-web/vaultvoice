@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VaultVoice Reset</title>
+<style>
+body { font-family: -apple-system, sans-serif; max-width: 400px; margin: 40px auto; padding: 20px; text-align: center; }
+#status { margin: 20px 0; padding: 15px; border-radius: 8px; font-size: 16px; }
+.ok { background: #d4edda; color: #155724; }
+.err { background: #f8d7da; color: #721c24; }
+.info { background: #fff3cd; color: #856404; }
+button { padding: 12px 24px; font-size: 18px; border: none; border-radius: 8px; background: #007aff; color: #fff; margin: 10px; }
+</style>
+</head>
+<body>
+<h2>VaultVoice Cache Reset</h2>
+<div id="status" class="info">초기화 중...</div>
+<script>
+var el = document.getElementById('status');
+var steps = [];
+
+// Step 1: Unregister all service workers
+navigator.serviceWorker.getRegistrations().then(function(regs) {
+  if (regs.length === 0) {
+    steps.push('SW: 없음');
+  }
+  var promises = regs.map(function(reg) {
+    return reg.unregister().then(function(ok) {
+      steps.push('SW 해제: ' + (ok ? 'OK' : 'FAIL'));
+    });
+  });
+  return Promise.all(promises);
+}).then(function() {
+  // Step 2: Clear all caches
+  return caches.keys().then(function(keys) {
+    if (keys.length === 0) {
+      steps.push('캐시: 없음');
+    }
+    return Promise.all(keys.map(function(k) {
+      return caches.delete(k).then(function() {
+        steps.push('캐시 삭제: ' + k);
+      });
+    }));
+  });
+}).then(function() {
+  // Step 3: Clear localStorage
+  localStorage.clear();
+  steps.push('localStorage 초기화 완료');
+
+  el.className = 'ok';
+  el.innerHTML = '<b>초기화 완료!</b><br><br>' + steps.join('<br>') +
+    '<br><br><button onclick="location.href=\'/\'">앱으로 이동</button>';
+}).catch(function(e) {
+  el.className = 'err';
+  el.textContent = '오류: ' + e.message;
+});
+</script>
+</body>
+</html>

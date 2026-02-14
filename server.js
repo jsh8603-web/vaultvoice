@@ -32,6 +32,14 @@ app.use((req, res, next) => {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Request logger (debug)
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api')) {
+    console.log(`[REQ] ${req.method} ${req.path} from ${req.ip}`);
+  }
+  next();
+});
+
 // Auth middleware
 function auth(req, res, next) {
   const token = (req.headers.authorization || '').replace('Bearer ', '').trim();
@@ -43,7 +51,7 @@ function auth(req, res, next) {
 
 // Apply auth to all /api routes except health
 app.use('/api', (req, res, next) => {
-  if (req.path === '/health' || req.path.startsWith('/auth/google')) return next();
+  if (req.path === '/health' || req.path === '/reset' || req.path.startsWith('/auth/google')) return next();
   auth(req, res, next);
 });
 
@@ -175,6 +183,7 @@ app.get('/api/test', async (req, res) => {
 // ============================================================
 // Health check
 // ============================================================
+const serverStartedAt = Date.now();
 app.get('/api/health', (req, res) => {
   const vaultExists = fs.existsSync(VAULT_PATH);
   const dailyExists = fs.existsSync(DAILY_DIR);
@@ -182,8 +191,36 @@ app.get('/api/health', (req, res) => {
     status: 'ok',
     vault: vaultExists,
     dailyDir: dailyExists,
-    vaultPath: VAULT_PATH
+    vaultPath: VAULT_PATH,
+    platform: process.platform,
+    uptime: Math.floor(process.uptime()),
+    startedAt: new Date(serverStartedAt).toISOString(),
+    version: require('./package.json').version
   });
+});
+
+// Cache/SW reset page (no auth required)
+app.get('/api/reset', (req, res) => {
+  res.type('html').send(`<!DOCTYPE html><html><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Reset</title>
+<style>body{font-family:-apple-system,sans-serif;max-width:400px;margin:40px auto;padding:20px;text-align:center}
+#s{margin:20px 0;padding:15px;border-radius:8px;font-size:16px;background:#fff3cd;color:#856404}
+.ok{background:#d4edda!important;color:#155724!important}
+button{padding:12px 24px;font-size:18px;border:none;border-radius:8px;background:#007aff;color:#fff;margin:10px}</style>
+</head><body><h2>Cache Reset</h2><div id="s">초기화 중...</div>
+<script>
+var s=document.getElementById('s'),log=[];
+(navigator.serviceWorker?navigator.serviceWorker.getRegistrations():Promise.resolve([])).then(function(r){
+  return Promise.all(r.map(function(g){return g.unregister().then(function(){log.push('SW 해제 완료')})}));
+}).then(function(){
+  return caches.keys().then(function(k){return Promise.all(k.map(function(c){return caches.delete(c).then(function(){log.push('캐시 삭제: '+c)})}))});
+}).then(function(){
+  localStorage.clear();log.push('localStorage 초기화');
+  s.className='ok';
+  s.innerHTML='<b>완료!</b><br><br>'+log.join('<br>')+'<br><br><button onclick="location.href=\\'/\\'">앱으로 이동</button>';
+}).catch(function(e){s.textContent='오류: '+e.message});
+</script></body></html>`);
 });
 
 // ============================================================

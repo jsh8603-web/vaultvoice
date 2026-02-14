@@ -1,5 +1,5 @@
 // VaultVoice Service Worker v2
-const CACHE_NAME = 'vaultvoice-v2';
+const CACHE_NAME = 'vaultvoice-v2.3';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -39,6 +39,11 @@ self.addEventListener('fetch', function (e) {
 
   // API calls: network-first, offline fallback to 503
   if (url.pathname.startsWith('/api')) {
+    // iOS Safari bug: POST body is lost when intercepted by Service Worker
+    // Only intercept GET requests; let POST/PUT/DELETE pass through natively
+    if (e.request.method !== 'GET') {
+      return;
+    }
     e.respondWith(
       fetch(e.request).catch(function () {
         return new Response(
@@ -50,20 +55,19 @@ self.addEventListener('fetch', function (e) {
     return;
   }
 
-  // Static assets: cache-first
+  // Static assets: network-first with cache fallback
+  // Ensures updates are picked up quickly while still working offline
   e.respondWith(
-    caches.match(e.request).then(function (cached) {
-      if (cached) return cached;
-      return fetch(e.request).then(function (response) {
-        // Cache successful GET responses for same-origin
-        if (response.ok && e.request.method === 'GET' && url.origin === self.location.origin) {
-          var clone = response.clone();
-          caches.open(CACHE_NAME).then(function (cache) {
-            cache.put(e.request, clone);
-          });
-        }
-        return response;
-      });
+    fetch(e.request).then(function (response) {
+      if (response.ok && e.request.method === 'GET' && url.origin === self.location.origin) {
+        var clone = response.clone();
+        caches.open(CACHE_NAME).then(function (cache) {
+          cache.put(e.request, clone);
+        });
+      }
+      return response;
+    }).catch(function () {
+      return caches.match(e.request);
     })
   );
 });

@@ -1346,15 +1346,18 @@ function initVoiceRecognition() {
   var micBtn = document.getElementById('mic-btn');
   var textarea = document.getElementById('memo-text');
   
-  // Check if Web Speech API is available (Chrome, not iOS Safari)
+  // Always show mic button
+  micBtn.style.display = 'flex';
+
   var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) {
-    // iOS Safari or unsupported browser — hide mic button
-    micBtn.style.display = 'none';
+    // iOS Safari or unsupported browser — show button but prompt to use keyboard mic
+    micBtn.addEventListener('click', function () {
+      showToast('키보드의 🎙️ 마이크 버튼을 사용하세요', 'info');
+      textarea.focus();
+    });
     return;
   }
-
-  micBtn.style.display = 'flex';
   var recognition = new SpeechRecognition();
   recognition.lang = 'ko-KR';
   recognition.continuous = true;
@@ -2315,9 +2318,25 @@ function renderTestResults(checks) {
 // ============================================================
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').then(function (reg) {
-    // Check for updates every 30 minutes
+    // Force update check on every page load
+    reg.update().catch(function () { });
+    // Check for updates every 10 minutes
     setInterval(function () {
       reg.update().catch(function () { });
-    }, 30 * 60 * 1000);
+    }, 10 * 60 * 1000);
+    // When new SW is found, auto-reload to apply update
+    var refreshing = false;
+    reg.addEventListener('updatefound', function () {
+      var newWorker = reg.installing;
+      if (newWorker) {
+        newWorker.addEventListener('statechange', function () {
+          if (newWorker.state === 'activated' && navigator.serviceWorker.controller && !refreshing) {
+            refreshing = true;
+            console.log('[SW] Updated — reloading');
+            location.reload();
+          }
+        });
+      }
+    });
   }).catch(function () { });
 }
