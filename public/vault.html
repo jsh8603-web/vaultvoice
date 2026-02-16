@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#11111b">
+<title>볼트 관리</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#1e1e2e;--bg2:#181825;--bg3:#11111b;--surface:#313244;
+  --overlay:#45475a;--text:#cdd6f4;--subtext:#a6adc8;--blue:#89b4fa;
+  --green:#a6e3a1;--red:#f38ba8;--yellow:#f9e2af;--mauve:#cba6f7;
+  --teal:#94e2d5;--peach:#fab387;--border:#585b70;
+  --safe-top:env(safe-area-inset-top);--safe-bot:env(safe-area-inset-bottom);
+  --hdr-h:48px;--mob-nav:54px;
+}
+html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px;-webkit-text-size-adjust:100%;overflow:hidden}
+button{cursor:pointer;border:none;background:none;color:var(--text);font:inherit;-webkit-tap-highlight-color:transparent}
+input,textarea,select{font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px;outline:none;font-size:16px}
+input:focus,textarea:focus{border-color:var(--blue)}
+
+/* ---- Layout ---- */
+#app{display:flex;flex-direction:column;height:100vh;height:100dvh}
+
+/* Header */
+#header{
+  height:calc(var(--hdr-h) + var(--safe-top));
+  padding-top:var(--safe-top);
+  background:var(--bg3);display:flex;align-items:center;padding-left:12px;padding-right:12px;gap:6px;
+  border-bottom:1px solid var(--border);flex-shrink:0;
+}
+#header h1{font-size:15px;color:var(--blue);white-space:nowrap}
+.hdr-btn{
+  width:40px;height:40px;border-radius:10px;font-size:20px;
+  background:var(--surface);border:1px solid var(--border);
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;
+}
+.hdr-btn:active{background:var(--overlay);transform:scale(0.95)}
+#search-box{flex:1;min-width:0;font-size:15px;border-radius:10px;padding:8px 12px}
+
+/* Main area */
+#main{flex:1;overflow:hidden;position:relative}
+
+/* Panels */
+.panel{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column;overflow:hidden;transition:opacity 0.15s}
+.panel.hidden{opacity:0;pointer-events:none;z-index:0}
+.panel.active{opacity:1;pointer-events:auto;z-index:1}
+
+/* Tree panel */
+#tree-panel{background:var(--bg2)}
+#tree-header{padding:10px 12px;font-size:13px;color:var(--subtext);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px}
+#tree-list{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:6px 0}
+.tree-folder,.tree-file{padding:10px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:15px;border-radius:8px;margin:2px 6px;-webkit-tap-highlight-color:transparent}
+.tree-folder:active,.tree-file:active{background:var(--surface)}
+.tree-file.active{background:var(--surface);color:var(--blue)}
+.tree-folder .icon{font-size:13px;width:18px;text-align:center;flex-shrink:0}
+.tree-file .icon{font-size:13px;width:18px;text-align:center;flex-shrink:0;color:var(--subtext)}
+.tree-file span:last-child,.tree-folder span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree-children{padding-left:16px}
+.tree-children.collapsed{display:none}
+
+/* Center panel (note) */
+#center-panel{background:var(--bg)}
+#note-toolbar{
+  min-height:44px;background:var(--bg2);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;padding:4px 8px;gap:4px;flex-shrink:0;flex-wrap:wrap;
+}
+.tb-btn{
+  padding:6px 12px;border-radius:8px;font-size:13px;font-weight:500;
+  background:var(--surface);border:1px solid var(--border);white-space:nowrap;
+}
+.tb-btn:active{background:var(--overlay);transform:scale(0.95)}
+.tb-btn.active{background:var(--blue);color:var(--bg3);border-color:var(--blue)}
+#note-path{font-size:12px;color:var(--subtext);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#note-content{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;padding:16px}
+#note-view{line-height:1.8;font-size:15px}
+#note-view h1{font-size:1.5em;color:var(--blue);margin:0.6em 0 0.3em}
+#note-view h2{font-size:1.3em;color:var(--mauve);margin:0.5em 0 0.3em}
+#note-view h3{font-size:1.1em;color:var(--teal);margin:0.4em 0 0.2em}
+#note-view code{background:var(--surface);padding:2px 6px;border-radius:4px;font-size:0.85em}
+#note-view pre{background:var(--bg3);padding:12px;border-radius:8px;overflow-x:auto;margin:10px 0;font-size:13px}
+#note-view pre code{background:none;padding:0}
+#note-view blockquote{border-left:3px solid var(--mauve);padding-left:12px;color:var(--subtext);margin:8px 0}
+#note-view a{color:var(--blue);text-decoration:none}
+#note-view ul,#note-view ol{padding-left:24px;margin:6px 0}
+#note-view li{margin:4px 0}
+#note-view table{border-collapse:collapse;margin:10px 0;width:100%;font-size:13px}
+#note-view th,#note-view td{border:1px solid var(--border);padding:6px 8px;text-align:left}
+#note-view th{background:var(--surface)}
+#note-view hr{border:none;border-top:1px solid var(--border);margin:16px 0}
+#note-view img{max-width:100%;border-radius:8px}
+#note-view .wikilink{color:var(--teal);cursor:pointer;text-decoration:underline;text-decoration-style:dotted}
+#note-view .tag{color:var(--peach)}
+#note-edit{
+  width:100%;height:100%;resize:none;background:var(--bg);border:none;color:var(--text);
+  padding:16px;font-family:'SF Mono','Menlo','Consolas',monospace;font-size:14px;line-height:1.6;display:none;
+}
+
+/* Info panel */
+#info-panel{background:var(--bg2);overflow-y:auto;-webkit-overflow-scrolling:touch}
+#info-header{padding:10px 12px;font-size:13px;font-weight:600;color:var(--subtext);border-bottom:1px solid var(--border)}
+#info-content{padding:12px}
+.info-section{margin-bottom:16px}
+.info-section h4{font-size:12px;color:var(--subtext);text-transform:uppercase;margin-bottom:6px;letter-spacing:0.5px}
+.info-section .val{font-size:14px;word-break:break-all}
+.info-tag{display:inline-block;background:var(--surface);padding:4px 10px;border-radius:12px;font-size:13px;margin:3px;color:var(--peach)}
+.backlink-item{display:block;padding:6px 0;color:var(--blue);font-size:13px;cursor:pointer;text-decoration:none;border-bottom:1px solid var(--border)}
+.backlink-item:last-child{border-bottom:none}
+#append-area{width:100%;min-height:80px;font-size:14px;margin-top:6px;resize:vertical;border-radius:8px}
+.info-action-btn{
+  width:100%;padding:10px;border-radius:8px;font-size:14px;font-weight:500;margin-top:6px;
+  background:var(--surface);border:1px solid var(--border);text-align:center;
+}
+.info-action-btn:active{background:var(--overlay)}
+
+/* Mobile bottom nav */
+#mob-nav{
+  height:calc(var(--mob-nav) + var(--safe-bot));
+  padding-bottom:var(--safe-bot);
+  background:var(--bg3);border-top:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-around;flex-shrink:0;
+}
+.nav-tab{
+  flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;
+  padding:6px 0;font-size:10px;color:var(--subtext);-webkit-tap-highlight-color:transparent;
+}
+.nav-tab .nav-icon{font-size:22px}
+.nav-tab.active{color:var(--blue)}
+.nav-tab:active{opacity:0.7}
+
+/* Recent bar (above mob-nav) */
+#footer{
+  height:34px;background:var(--bg3);border-top:1px solid var(--border);
+  display:flex;align-items:center;padding:0 10px;gap:6px;overflow-x:auto;flex-shrink:0;
+  -webkit-overflow-scrolling:touch;
+}
+.recent-item{
+  padding:4px 10px;border-radius:6px;font-size:12px;color:var(--subtext);
+  white-space:nowrap;cursor:pointer;background:var(--surface);flex-shrink:0;
+}
+.recent-item:active{color:var(--text);background:var(--overlay)}
+#footer-label{font-size:11px;color:var(--subtext);margin-right:2px;white-space:nowrap;flex-shrink:0}
+
+/* Modal */
+.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:100;display:none;align-items:flex-end;justify-content:center}
+.modal-overlay.show{display:flex}
+.modal{
+  background:var(--bg2);border:1px solid var(--border);border-radius:16px 16px 0 0;
+  padding:20px;padding-bottom:calc(20px + var(--safe-bot));width:100%;max-width:500px;
+}
+.modal h3{margin-bottom:12px;color:var(--blue);font-size:16px}
+.modal label{display:block;font-size:13px;color:var(--subtext);margin:10px 0 4px}
+.modal input,.modal textarea,.modal select{width:100%;font-size:16px}
+.modal textarea{min-height:100px;resize:vertical}
+.modal-btns{display:flex;gap:8px;margin-top:16px}
+.btn-primary{flex:1;padding:12px;border-radius:10px;background:var(--blue);color:var(--bg3);font-weight:600;font-size:15px;text-align:center}
+.btn-primary:active{opacity:0.85}
+.btn-danger{flex:1;padding:12px;border-radius:10px;background:var(--red);color:var(--bg3);font-weight:600;font-size:15px;text-align:center}
+.btn-danger:active{opacity:0.85}
+.btn-cancel{flex:1;padding:12px;border-radius:10px;background:var(--surface);border:1px solid var(--border);font-size:15px;text-align:center}
+.btn-cancel:active{background:var(--overlay)}
+
+/* Search results */
+#search-results{
+  position:fixed;top:calc(var(--hdr-h) + var(--safe-top));left:0;right:0;
+  background:var(--bg2);border-bottom:1px solid var(--border);
+  max-height:60vh;overflow-y:auto;z-index:50;display:none;
+  box-shadow:0 4px 16px rgba(0,0,0,0.4);-webkit-overflow-scrolling:touch;
+}
+#search-results.show{display:block}
+.sr-item{padding:12px 16px;cursor:pointer;border-bottom:1px solid var(--border)}
+.sr-item:active{background:var(--surface)}
+.sr-item:last-child{border-bottom:none}
+.sr-title{font-size:14px;color:var(--blue);font-weight:500}
+.sr-snippet{font-size:12px;color:var(--subtext);margin-top:4px;line-height:1.5}
+
+/* Command palette */
+#cmd-palette{
+  position:fixed;top:0;left:0;right:0;bottom:0;
+  background:var(--bg2);z-index:200;display:none;flex-direction:column;
+  padding-top:var(--safe-top);
+}
+#cmd-palette.show{display:flex}
+#cmd-header{display:flex;align-items:center;padding:8px;gap:8px;border-bottom:1px solid var(--border)}
+#cmd-filter{flex:1;border:none;font-size:16px;padding:10px 12px;border-radius:10px}
+#cmd-close{width:40px;height:40px;font-size:20px;border-radius:10px;background:var(--surface);display:flex;align-items:center;justify-content:center}
+#cmd-list{overflow-y:auto;-webkit-overflow-scrolling:touch;flex:1;padding-bottom:var(--safe-bot)}
+.cmd-item{padding:14px 16px;cursor:pointer;font-size:14px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:2px}
+.cmd-item:active{background:var(--surface)}
+.cmd-item .cmd-name{color:var(--text);font-weight:500}
+.cmd-item .cmd-id{color:var(--subtext);font-size:12px}
+
+/* Toast */
+#toast{
+  position:fixed;bottom:calc(var(--mob-nav) + var(--safe-bot) + 44px);
+  left:50%;transform:translateX(-50%);
+  background:var(--surface);color:var(--text);padding:10px 20px;border-radius:10px;
+  font-size:14px;z-index:300;display:none;border:1px solid var(--border);
+  box-shadow:0 4px 12px rgba(0,0,0,0.4);white-space:nowrap;
+}
+#toast.show{display:block;animation:fadeIn 0.2s}
+@keyframes fadeIn{from{opacity:0;transform:translateX(-50%) translateY(10px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+
+/* Empty state */
+.empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--subtext);gap:10px;padding:40px}
+.empty-state .icon{font-size:48px;opacity:0.3}
+.empty-state p{font-size:15px;text-align:center}
+
+/* ---- Desktop (768px+) ---- */
+@media (min-width:768px) {
+  #main{display:flex;position:relative}
+  .panel{position:relative;display:flex !important;opacity:1 !important;pointer-events:auto !important;z-index:auto !important}
+  .panel.hidden{display:flex !important;opacity:1 !important;pointer-events:auto !important}
+  #tree-panel{width:260px;border-right:1px solid var(--border);flex-shrink:0}
+  #center-panel{flex:1;min-width:0}
+  #info-panel{width:280px;border-left:1px solid var(--border);flex-shrink:0}
+  #mob-nav{display:none}
+  #search-results{left:auto;right:10px;width:500px;border-radius:0 0 8px 8px}
+  .modal-overlay{align-items:center}
+  .modal{border-radius:12px;padding-bottom:20px}
+  #cmd-palette{top:15%;left:50%;right:auto;bottom:auto;transform:translateX(-50%);width:500px;max-height:60vh;border-radius:12px;border:1px solid var(--border);padding-top:0}
+  .hdr-btn{width:auto;padding:6px 12px;font-size:14px}
+  .hdr-btn .btn-label{display:inline}
+  #toast{bottom:60px}
+}
+
+/* Scrollbar (desktop) */
+@media (min-width:768px) {
+  ::-webkit-scrollbar{width:6px;height:6px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:var(--overlay);border-radius:3px}
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- Header -->
+  <div id="header">
+    <a href="/" class="hdr-btn" style="text-decoration:none;font-size:22px" title="홈">&#127968;</a>
+    <input type="text" id="search-box" placeholder="검색..." autocomplete="off" autocorrect="off" autocapitalize="off">
+    <button class="hdr-btn" onclick="showCreateModal()" title="새 노트">&#10133;</button>
+    <button class="hdr-btn" onclick="toggleCmdPalette()" title="명령어">&#9889;</button>
+  </div>
+
+  <!-- Search Results -->
+  <div id="search-results"></div>
+
+  <!-- Main panels -->
+  <div id="main">
+    <!-- Tree -->
+    <div id="tree-panel" class="panel active">
+      <div id="tree-header">
+        <span style="font-size:15px">&#128194;</span>
+        <span>탐색기</span>
+        <div style="flex:1"></div>
+        <button style="font-size:16px;color:var(--subtext);padding:4px" onclick="loadTree('')" title="새로고침">&#8635;</button>
+      </div>
+      <details style="padding:6px 12px;font-size:12px;color:var(--subtext);border-bottom:1px solid var(--border)">
+        <summary style="cursor:pointer">사용법</summary>
+        <p style="margin-top:4px;line-height:1.5">폴더를 클릭하면 하위 항목이 표시됩니다. .md 파일을 클릭하면 노트가 열립니다.</p>
+      </details>
+      <div id="tree-list"></div>
+    </div>
+
+    <!-- Note -->
+    <div id="center-panel" class="panel hidden">
+      <div id="note-toolbar">
+        <span id="note-path">노트를 선택하세요</span>
+        <div style="flex:1"></div>
+        <button class="tb-btn active" id="btn-view" onclick="setMode('view')">보기</button>
+        <button class="tb-btn" id="btn-edit" onclick="setMode('edit')">편집</button>
+        <button class="tb-btn" id="btn-save" onclick="saveNote()" style="display:none">&#128190;</button>
+        <button class="tb-btn" onclick="showMoveModal()">&#128193;</button>
+        <button class="tb-btn" style="color:var(--red)" onclick="deleteNote()">&#128465;</button>
+      </div>
+      <div id="note-content">
+        <div id="note-view">
+          <div class="empty-state">
+            <div class="icon">&#128209;</div>
+            <p>탐색기에서 노트를 선택하세요</p>
+            <details style="font-size:12px;color:var(--subtext);text-align:left;margin-top:8px">
+              <summary style="cursor:pointer;text-align:center">사용법</summary>
+              <p style="margin-top:4px;line-height:1.5">탐색기에서 노트를 클릭하거나, 상단 검색창(Ctrl+K)으로 검색하세요.<br>보기/편집 모드 전환(Ctrl+E), 저장(Ctrl+S) 단축키를 사용할 수 있습니다.</p>
+            </details>
+          </div>
+        </div>
+        <textarea id="note-edit" spellcheck="false"></textarea>
+      </div>
+    </div>
+
+    <!-- Info -->
+    <div id="info-panel" class="panel hidden">
+      <div id="info-header">&#8505;&#65039; 정보</div>
+      <div id="info-content">
+        <div class="empty-state" style="height:auto;padding:30px">
+          <p style="font-size:13px">노트를 열면 정보가 표시됩니다</p>
+          <details style="font-size:12px;color:var(--subtext);text-align:left;margin-top:8px">
+            <summary style="cursor:pointer;text-align:center">사용법</summary>
+            <p style="margin-top:4px;line-height:1.5">노트를 열면 경로, 크기, 태그, 백링크 정보가 표시됩니다.<br>하단에서 내용을 추가로 덧붙일 수 있습니다.</p>
+          </details>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Recent -->
+  <div id="footer">
+    <span id="footer-label">최근:</span>
+  </div>
+
+  <!-- Mobile bottom nav -->
+  <div id="mob-nav">
+    <button class="nav-tab active" data-panel="tree-panel" onclick="switchPanel('tree-panel')">
+      <span class="nav-icon">&#128194;</span><span>탐색기</span>
+    </button>
+    <button class="nav-tab" data-panel="center-panel" onclick="switchPanel('center-panel')">
+      <span class="nav-icon">&#128196;</span><span>노트</span>
+    </button>
+    <button class="nav-tab" data-panel="info-panel" onclick="switchPanel('info-panel')">
+      <span class="nav-icon">&#8505;&#65039;</span><span>정보</span>
+    </button>
+  </div>
+</div>
+
+<!-- Create Modal -->
+<div class="modal-overlay" id="modal-create">
+  <div class="modal">
+    <h3>&#10133; 새 노트</h3>
+    <label>경로</label>
+    <input type="text" id="create-path" placeholder="폴더/노트이름.md" autocomplete="off" autocorrect="off" autocapitalize="off">
+    <label>내용</label>
+    <textarea id="create-content" placeholder="# 새 노트"></textarea>
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="closeModal('modal-create')">취소</button>
+      <button class="btn-primary" onclick="createNote()">생성</button>
+    </div>
+  </div>
+</div>
+
+<!-- Move Modal -->
+<div class="modal-overlay" id="modal-move">
+  <div class="modal">
+    <h3>&#128193; 이동 / 이름변경</h3>
+    <label>현재 경로</label>
+    <input type="text" id="move-from" readonly style="opacity:0.6">
+    <label>새 경로</label>
+    <input type="text" id="move-to" placeholder="새/경로/노트.md" autocomplete="off" autocorrect="off" autocapitalize="off">
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="closeModal('modal-move')">취소</button>
+      <button class="btn-primary" onclick="moveNote()">이동</button>
+    </div>
+  </div>
+</div>
+
+<!-- Command Palette -->
+<div id="cmd-palette">
+  <div id="cmd-header">
+    <input type="text" id="cmd-filter" placeholder="명령어 검색..." autocomplete="off" autocorrect="off" autocapitalize="off">
+    <button id="cmd-close" onclick="toggleCmdPalette()">&times;</button>
+  </div>
+  <details style="padding:6px 12px;font-size:12px;color:var(--subtext);border-bottom:1px solid var(--border)">
+    <summary style="cursor:pointer">사용법</summary>
+    <p style="margin-top:4px;line-height:1.5">Ctrl+P로 열기. Obsidian 명령어를 검색하고 실행할 수 있습니다.</p>
+  </details>
+  <div id="cmd-list"></div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+const API_KEY = localStorage.getItem('vaultvoice_api_key') || prompt('Enter API Key:') || '';
+if (API_KEY) localStorage.setItem('vaultvoice_api_key', API_KEY);
+
+const headers = () => ({ 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json' });
+
+let currentPath = '';
+let currentContent = '';
+let mode = 'view';
+let recentFiles = JSON.parse(localStorage.getItem('vm_recent') || '[]');
+let allCommands = [];
+let searchTimeout = null;
+const isMobile = () => window.innerWidth < 768;
+
+// ---- API ----
+async function api(method, url, body) {
+  const opts = { method, headers: headers() };
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  return await fetch(url, opts);
+}
+
+// ---- Toast ----
+function toast(msg, duration = 2500) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), duration);
+}
+
+// ---- Mobile panel switching ----
+function switchPanel(id) {
+  document.querySelectorAll('.panel').forEach(p => {
+    p.classList.remove('active');
+    p.classList.add('hidden');
+  });
+  document.getElementById(id).classList.remove('hidden');
+  document.getElementById(id).classList.add('active');
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  document.querySelector(`.nav-tab[data-panel="${id}"]`).classList.add('active');
+}
+
+// ---- Tree ----
+async function loadTree(folder, container) {
+  const target = container || document.getElementById('tree-list');
+  if (!container) target.innerHTML = '<div style="padding:16px;color:var(--subtext)">로딩 중...</div>';
+  try {
+    const res = await api('GET', `/api/vm/browse?folder=${encodeURIComponent(folder)}`);
+    const data = await res.json();
+    if (!container) target.innerHTML = '';
+    const files = (data.files || []).sort((a, b) => {
+      const aDir = a.endsWith('/');
+      const bDir = b.endsWith('/');
+      if (aDir !== bDir) return aDir ? -1 : 1;
+      return a.localeCompare(b);
+    });
+    for (const f of files) {
+      const isDir = f.endsWith('/');
+      const name = isDir ? f.slice(0, -1) : f;
+      const fullPath = folder ? folder + '/' + name : name;
+      if (isDir) {
+        const div = document.createElement('div');
+        const row = document.createElement('div');
+        row.className = 'tree-folder';
+        row.innerHTML = `<span class="icon">&#9654;</span><span>${esc(name)}</span>`;
+        const children = document.createElement('div');
+        children.className = 'tree-children collapsed';
+        let loaded = false;
+        row.onclick = async (e) => {
+          e.stopPropagation();
+          const collapsed = children.classList.toggle('collapsed');
+          row.querySelector('.icon').innerHTML = collapsed ? '&#9654;' : '&#9660;';
+          if (!loaded && !collapsed) { loaded = true; await loadTree(fullPath, children); }
+        };
+        div.appendChild(row);
+        div.appendChild(children);
+        target.appendChild(div);
+      } else if (name.endsWith('.md')) {
+        const div = document.createElement('div');
+        div.className = 'tree-file';
+        div.innerHTML = `<span class="icon">&#128196;</span><span>${esc(name)}</span>`;
+        div.onclick = () => { openNote(fullPath); if (isMobile()) switchPanel('center-panel'); };
+        div.dataset.path = fullPath;
+        target.appendChild(div);
+      }
+    }
+  } catch (e) {
+    target.innerHTML = `<div style="padding:16px;color:var(--red)">${esc(e.message)}</div>`;
+  }
+}
+
+// ---- Note ----
+async function openNote(p) {
+  try {
+    const res = await api('GET', `/api/vm/read?path=${encodeURIComponent(p)}`);
+    if (!res.ok) { toast('로딩 실패'); return; }
+    const data = await res.json();
+    currentPath = p;
+    currentContent = data.content;
+    document.getElementById('note-path').textContent = p;
+    renderNote(currentContent);
+    document.getElementById('note-edit').value = currentContent;
+    setMode('view');
+    addRecent(p);
+    loadInfo(p, currentContent);
+    document.querySelectorAll('.tree-file.active').forEach(el => el.classList.remove('active'));
+    const treeEl = document.querySelector(`.tree-file[data-path="${CSS.escape(p)}"]`);
+    if (treeEl) treeEl.classList.add('active');
+  } catch (e) {
+    toast('오류: ' + e.message);
+  }
+}
+
+// ---- Markdown ----
+function renderNote(md) {
+  const el = document.getElementById('note-view');
+  el.innerHTML = renderMarkdown(md);
+  el.querySelectorAll('.wikilink').forEach(a => {
+    a.onclick = () => { if (a.dataset.target) searchAndOpen(a.dataset.target); };
+  });
+}
+
+function renderMarkdown(text) {
+  let md = text.replace(/^---\n[\s\S]*?\n---\n?/, '');
+  md = md.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  md = md.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => `<pre><code class="lang-${lang}">${code.trim()}</code></pre>`);
+  md = md.replace(/`([^`]+)`/g, '<code>$1</code>');
+  md = md.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  md = md.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  md = md.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  md = md.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  md = md.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  md = md.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  md = md.replace(/~~(.+?)~~/g, '<del>$1</del>');
+  md = md.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+  md = md.replace(/^---$/gm, '<hr>');
+  md = md.replace(/\[\[([^\]|]+?)(?:\|([^\]]+?))?\]\]/g, (_, target, display) => `<span class="wikilink" data-target="${target}">${display || target}</span>`);
+  md = md.replace(/(^|\s)#([a-zA-Z0-9가-힣_/\-]+)/g, '$1<span class="tag">#$2</span>');
+  md = md.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img alt="$1" src="$2">');
+  md = md.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  md = md.replace(/^(\s*)- \[x\] (.+)$/gm, '$1<li style="list-style:none">&#9745; $2</li>');
+  md = md.replace(/^(\s*)- \[ \] (.+)$/gm, '$1<li style="list-style:none">&#9744; $2</li>');
+  md = md.replace(/^- (.+)$/gm, '<li>$1</li>');
+  md = md.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+  md = md.replace(/^(\|.+\|)\n(\|[\s\-:|]+\|)\n((?:\|.+\|\n?)*)/gm, (_, header, sep, body) => {
+    const thCells = header.split('|').filter(c => c.trim()).map(c => `<th>${c.trim()}</th>`).join('');
+    const rows = body.trim().split('\n').map(row => {
+      const cells = row.split('|').filter(c => c.trim()).map(c => `<td>${c.trim()}</td>`).join('');
+      return `<tr>${cells}</tr>`;
+    }).join('');
+    return `<table><thead><tr>${thCells}</tr></thead><tbody>${rows}</tbody></table>`;
+  });
+  md = md.replace(/\n{2,}/g, '</p><p>');
+  md = md.replace(/\n/g, '<br>');
+  return '<p>' + md + '</p>';
+}
+
+// ---- View/Edit ----
+function setMode(m) {
+  mode = m;
+  const view = document.getElementById('note-view');
+  const edit = document.getElementById('note-edit');
+  const btnV = document.getElementById('btn-view');
+  const btnE = document.getElementById('btn-edit');
+  const btnS = document.getElementById('btn-save');
+  if (m === 'view') {
+    view.style.display = 'block'; edit.style.display = 'none';
+    btnV.classList.add('active'); btnE.classList.remove('active'); btnS.style.display = 'none';
+  } else {
+    view.style.display = 'none'; edit.style.display = 'block'; edit.value = currentContent;
+    btnV.classList.remove('active'); btnE.classList.add('active'); btnS.style.display = '';
+    edit.focus();
+  }
+}
+
+// ---- Save ----
+async function saveNote() {
+  if (!currentPath) return;
+  const content = document.getElementById('note-edit').value;
+  try {
+    const res = await api('PUT', '/api/vm/write', { path: currentPath, content });
+    if (!res.ok) { toast('저장 실패'); return; }
+    currentContent = content;
+    renderNote(content);
+    setMode('view');
+    toast('저장됨!');
+    loadInfo(currentPath, content);
+  } catch (e) { toast('Error: ' + e.message); }
+}
+
+// ---- Delete ----
+async function deleteNote() {
+  if (!currentPath) return;
+  if (!confirm(`"${currentPath}" 파일을 삭제하시겠습니까?`)) return;
+  try {
+    const res = await api('DELETE', `/api/vm/delete?path=${encodeURIComponent(currentPath)}`);
+    if (!res.ok) { toast('삭제 실패'); return; }
+    toast('삭제됨');
+    currentPath = ''; currentContent = '';
+    document.getElementById('note-path').textContent = '노트를 선택하세요';
+    document.getElementById('note-view').innerHTML = '<div class="empty-state"><div class="icon">&#128209;</div><p>노트가 삭제되었습니다</p></div>';
+    document.getElementById('info-content').innerHTML = '';
+    loadTree('');
+    if (isMobile()) switchPanel('tree-panel');
+  } catch (e) { toast('Error: ' + e.message); }
+}
+
+// ---- Create ----
+function showCreateModal() {
+  document.getElementById('create-path').value = '';
+  document.getElementById('create-content').value = '# 새 노트\n\n';
+  document.getElementById('modal-create').classList.add('show');
+  setTimeout(() => document.getElementById('create-path').focus(), 100);
+}
+
+async function createNote() {
+  const p = document.getElementById('create-path').value.trim();
+  const c = document.getElementById('create-content').value;
+  if (!p) { toast('경로를 입력하세요'); return; }
+  const notePath = p.endsWith('.md') ? p : p + '.md';
+  try {
+    const res = await api('PUT', '/api/vm/write', { path: notePath, content: c });
+    if (!res.ok) { toast('생성 실패'); return; }
+    closeModal('modal-create');
+    toast('생성됨!');
+    loadTree('');
+    openNote(notePath);
+    if (isMobile()) switchPanel('center-panel');
+  } catch (e) { toast('Error: ' + e.message); }
+}
+
+// ---- Move ----
+function showMoveModal() {
+  if (!currentPath) return;
+  document.getElementById('move-from').value = currentPath;
+  document.getElementById('move-to').value = currentPath;
+  document.getElementById('modal-move').classList.add('show');
+  setTimeout(() => { document.getElementById('move-to').focus(); document.getElementById('move-to').select(); }, 100);
+}
+
+async function moveNote() {
+  const from = document.getElementById('move-from').value;
+  const to = document.getElementById('move-to').value.trim();
+  if (!to || from === to) { closeModal('modal-move'); return; }
+  try {
+    const res = await api('POST', '/api/vm/move', { from, to });
+    if (!res.ok) { toast('이동 실패'); return; }
+    closeModal('modal-move');
+    toast('이동됨!');
+    loadTree('');
+    openNote(to);
+  } catch (e) { toast('Error: ' + e.message); }
+}
+
+// ---- Search ----
+document.getElementById('search-box').addEventListener('input', (e) => {
+  clearTimeout(searchTimeout);
+  const q = e.target.value.trim();
+  if (!q) { hideSearch(); return; }
+  searchTimeout = setTimeout(() => doSearch(q), 300);
+});
+
+async function doSearch(q) {
+  try {
+    const res = await api('GET', `/api/vm/search?q=${encodeURIComponent(q)}&ctx=120`);
+    if (!res.ok) return;
+    const results = await res.json();
+    const el = document.getElementById('search-results');
+    if (!results.length) {
+      el.innerHTML = '<div class="sr-item"><div class="sr-title">결과 없음</div></div>';
+      el.classList.add('show'); return;
+    }
+    el.innerHTML = results.slice(0, 20).map(r => {
+      const snippets = (r.matches || []).slice(0, 2).map(m => {
+        const txt = (m.match && m.match.text) || m.context || '';
+        return esc(txt.slice(0, 120));
+      }).join(' ... ');
+      return `<div class="sr-item" onclick="openNote('${escAttr(r.filename)}');hideSearch();if(isMobile())switchPanel('center-panel')">
+        <div class="sr-title">${esc(r.filename)}</div>
+        <div class="sr-snippet">${snippets || ''}</div>
+      </div>`;
+    }).join('');
+    el.classList.add('show');
+  } catch (e) { /* ignore */ }
+}
+
+function hideSearch() {
+  document.getElementById('search-results').classList.remove('show');
+  document.getElementById('search-box').blur();
+}
+
+async function searchAndOpen(name) {
+  const withMd = name.endsWith('.md') ? name : name + '.md';
+  try {
+    const res = await api('GET', `/api/vm/search?q=${encodeURIComponent(name)}&ctx=0`);
+    if (res.ok) {
+      const results = await res.json();
+      const exact = results.find(r => r.filename === withMd || r.filename.endsWith('/' + withMd));
+      if (exact) { openNote(exact.filename); return; }
+      if (results.length > 0) { openNote(results[0].filename); return; }
+    }
+  } catch (e) { /* ignore */ }
+  toast(`"${name}" 찾을 수 없습니다`);
+}
+
+// ---- Info ----
+async function loadInfo(p, content) {
+  const el = document.getElementById('info-content');
+  const filename = p.split('/').pop().replace('.md', '');
+  let html = '';
+  html += `<div class="info-section"><h4>경로</h4><div class="val">${esc(p)}</div></div>`;
+  html += `<div class="info-section"><h4>크기</h4><div class="val">${content.length.toLocaleString()}자</div></div>`;
+  html += `<div class="info-section"><h4>태그</h4><div id="info-tags">로딩 중...</div></div>`;
+  html += `<div class="info-section"><h4>백링크</h4><div id="info-backlinks">로딩 중...</div></div>`;
+  html += `<div class="info-section"><h4>내용 추가</h4>
+    <textarea id="append-area" placeholder="추가할 내용..."></textarea>
+    <button class="info-action-btn" onclick="appendContent()">&#10133; 추가</button>
+  </div>`;
+  el.innerHTML = html;
+  loadTags(p);
+  loadBacklinks(filename);
+}
+
+async function loadTags(p) {
+  const el = document.getElementById('info-tags');
+  try {
+    const res = await api('GET', `/api/vm/tags?path=${encodeURIComponent(p)}`);
+    if (!res.ok) { el.textContent = 'Error'; return; }
+    const data = await res.json();
+    if (!data.tags.length) {
+      el.innerHTML = '<span style="font-size:13px;color:var(--subtext)">태그 없음</span><br><button class="info-action-btn" onclick="promptAddTag()">&#10133; 태그 추가</button>';
+      return;
+    }
+    el.innerHTML = data.tags.map(t => `<span class="info-tag">#${esc(t)}</span>`).join('') +
+      '<br><button class="info-action-btn" onclick="promptAddTag()">&#10133; 추가</button>' +
+      '<button class="info-action-btn" onclick="promptEditTags()" style="margin-top:4px">&#9998; 태그 편집</button>';
+  } catch (e) { el.textContent = 'Error'; }
+}
+
+async function loadBacklinks(name) {
+  const el = document.getElementById('info-backlinks');
+  try {
+    const res = await api('GET', `/api/vm/backlinks?name=${encodeURIComponent(name)}`);
+    if (!res.ok) { el.textContent = 'Error'; return; }
+    const results = await res.json();
+    if (!results.length) { el.innerHTML = '<span style="font-size:13px;color:var(--subtext)">백링크 없음</span>'; return; }
+    el.innerHTML = results.slice(0, 15).map(r =>
+      `<a class="backlink-item" onclick="openNote('${escAttr(r.filename)}');if(isMobile())switchPanel('center-panel')">${esc(r.filename)}</a>`
+    ).join('');
+  } catch (e) { el.textContent = 'Error'; }
+}
+
+async function promptAddTag() {
+  const tag = prompt('태그 이름:');
+  if (!tag || !currentPath) return;
+  try {
+    const res = await api('GET', `/api/vm/tags?path=${encodeURIComponent(currentPath)}`);
+    const data = await res.json();
+    const tags = [...data.frontmatterTags, tag.replace(/^#/, '')];
+    await api('PUT', '/api/vm/tags', { path: currentPath, tags });
+    toast('태그 추가됨');
+    loadTags(currentPath);
+  } catch (e) { toast('Error: ' + e.message); }
+}
+
+async function promptEditTags() {
+  if (!currentPath) return;
+  try {
+    const res = await api('GET', `/api/vm/tags?path=${encodeURIComponent(currentPath)}`);
+    const data = await res.json();
+    const input = prompt('태그 편집 (쉼표로 구분):', data.frontmatterTags.join(', '));
+    if (input === null) return;
+    const tags = input.split(',').map(t => t.trim()).filter(Boolean);
+    await api('PUT', '/api/vm/tags', { path: currentPath, tags });
+    toast('태그 수정됨');
+    loadTags(currentPath);
+  } catch (e) { toast('Error: ' + e.message); }
+}
+
+// ---- Append ----
+async function appendContent() {
+  if (!currentPath) return;
+  const area = document.getElementById('append-area');
+  const content = area.value.trim();
+  if (!content) return;
+  try {
+    const readRes = await api('GET', `/api/vm/read?path=${encodeURIComponent(currentPath)}`);
+    const data = await readRes.json();
+    const updated = data.content.trimEnd() + '\n\n' + content + '\n';
+    const writeRes = await api('PUT', '/api/vm/write', { path: currentPath, content: updated });
+    if (!writeRes.ok) { toast('추가 실패'); return; }
+    currentContent = updated;
+    renderNote(updated);
+    document.getElementById('note-edit').value = updated;
+    area.value = '';
+    toast('추가됨!');
+  } catch (e) { toast('Error: ' + e.message); }
+}
+
+// ---- Recent ----
+function addRecent(p) {
+  recentFiles = [p, ...recentFiles.filter(f => f !== p)].slice(0, 15);
+  localStorage.setItem('vm_recent', JSON.stringify(recentFiles));
+  renderRecent();
+}
+
+function renderRecent() {
+  const footer = document.getElementById('footer');
+  const label = document.getElementById('footer-label');
+  footer.innerHTML = '';
+  footer.appendChild(label);
+  for (const p of recentFiles.slice(0, 10)) {
+    const btn = document.createElement('button');
+    btn.className = 'recent-item';
+    btn.textContent = p.split('/').pop();
+    btn.title = p;
+    btn.onclick = () => { openNote(p); if (isMobile()) switchPanel('center-panel'); };
+    footer.appendChild(btn);
+  }
+}
+
+// ---- Command Palette ----
+async function toggleCmdPalette() {
+  const el = document.getElementById('cmd-palette');
+  if (el.classList.contains('show')) { el.classList.remove('show'); return; }
+  el.classList.add('show');
+  document.getElementById('cmd-filter').value = '';
+  setTimeout(() => document.getElementById('cmd-filter').focus(), 100);
+  if (!allCommands.length) await loadCommands();
+  filterCommands('');
+}
+
+async function loadCommands() {
+  try {
+    const res = await api('GET', '/api/vm/commands');
+    if (!res.ok) return;
+    const data = await res.json();
+    const cmds = data.commands || data;
+    allCommands = Array.isArray(cmds)
+      ? cmds.map(c => ({ id: c.id, name: c.name || c.id }))
+      : Object.entries(cmds).map(([id, info]) => ({ id, name: typeof info === 'string' ? info : (info.name || id) }));
+  } catch (e) { toast('명령어 로딩 실패'); }
+}
+
+function filterCommands(q) {
+  const list = document.getElementById('cmd-list');
+  const filtered = q ? allCommands.filter(c => c.id.toLowerCase().includes(q) || c.name.toLowerCase().includes(q)) : allCommands;
+  list.innerHTML = filtered.slice(0, 40).map(c =>
+    `<div class="cmd-item" onclick="execCommand('${escAttr(c.id)}')">
+      <span class="cmd-name">${esc(c.name)}</span>
+      <span class="cmd-id">${esc(c.id)}</span>
+    </div>`
+  ).join('');
+}
+
+document.getElementById('cmd-filter').addEventListener('input', (e) => {
+  filterCommands(e.target.value.trim().toLowerCase());
+});
+
+async function execCommand(id) {
+  document.getElementById('cmd-palette').classList.remove('show');
+  try {
+    const res = await api('POST', '/api/vm/command', { id });
+    if (!res.ok) { toast('명령 실행 실패'); return; }
+    toast(`실행됨: ${id}`);
+  } catch (e) { toast('Error: ' + e.message); }
+}
+
+// ---- Modal ----
+function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+document.querySelectorAll('.modal-overlay').forEach(el => {
+  el.addEventListener('click', (e) => { if (e.target === el) el.classList.remove('show'); });
+});
+
+// ---- Keyboard ----
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); document.getElementById('search-box').focus(); }
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); if (mode === 'edit') saveNote(); }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'e') { e.preventDefault(); setMode(mode === 'edit' ? 'view' : 'edit'); }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'p') { e.preventDefault(); toggleCmdPalette(); }
+  if (e.key === 'Escape') {
+    hideSearch();
+    document.getElementById('cmd-palette').classList.remove('show');
+    document.querySelectorAll('.modal-overlay.show').forEach(el => el.classList.remove('show'));
+  }
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#search-results') && !e.target.closest('#search-box')) hideSearch();
+});
+
+// ---- Util ----
+function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+function escAttr(s) { return (s || '').replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
+
+// ---- Init ----
+loadTree('');
+renderRecent();
+(async () => {
+  try {
+    const res = await api('GET', '/api/vm/recent?limit=10');
+    if (res.ok) {
+      const files = await res.json();
+      if (files.length && !recentFiles.length) {
+        recentFiles = files.map(f => f.path);
+        localStorage.setItem('vm_recent', JSON.stringify(recentFiles));
+        renderRecent();
+      }
+    }
+  } catch (e) { /* ignore */ }
+})();
+</script>
+</body>
+</html>

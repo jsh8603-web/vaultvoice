@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VaultVoice Icon Generator</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      gap: 32px;
+      padding: 40px;
+    }
+    h1 {
+      font-size: 28px;
+      font-weight: 600;
+      color: #ffffff;
+    }
+    .preview-row {
+      display: flex;
+      gap: 48px;
+      align-items: flex-end;
+    }
+    .preview {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+    .preview canvas {
+      border-radius: 20%;
+      box-shadow: 0 8px 32px rgba(0, 122, 255, 0.3);
+    }
+    .label {
+      font-size: 14px;
+      color: #999;
+    }
+    .actions {
+      display: flex;
+      gap: 16px;
+      margin-top: 16px;
+    }
+    button, a.btn {
+      background: #007AFF;
+      color: #fff;
+      border: none;
+      padding: 12px 28px;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.2s;
+    }
+    button:hover, a.btn:hover {
+      background: #005ecb;
+    }
+    .status {
+      font-size: 13px;
+      color: #66bb6a;
+      min-height: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h1>VaultVoice PWA Icon Generator</h1>
+
+  <div class="preview-row">
+    <div class="preview">
+      <canvas id="canvas192" width="192" height="192"></canvas>
+      <span class="label">192 x 192</span>
+    </div>
+    <div class="preview">
+      <canvas id="canvas512" width="512" height="512"></canvas>
+      <span class="label">512 x 512</span>
+    </div>
+  </div>
+
+  <div class="actions">
+    <a id="dl192" class="btn" download="icon-192.png">Download 192px</a>
+    <a id="dl512" class="btn" download="icon-512.png">Download 512px</a>
+    <button id="dlBoth">Download Both</button>
+  </div>
+
+  <div id="status" class="status"></div>
+
+  <script>
+    /**
+     * Draws the VaultVoice icon on a canvas at the given size.
+     *
+     * Design:
+     *   - Rounded-square blue background (#007AFF) with subtle radial gradient
+     *   - Combined microphone + pen icon in white, representing voice-to-vault
+     *   - Microphone body on the left, pen nib on the right, sharing a center stem
+     */
+    function drawIcon(canvas) {
+      const size = canvas.width;
+      const ctx = canvas.getContext('2d');
+      const s = size / 512; // scale factor relative to 512 base
+
+      // --- Background: rounded square with gradient ---
+      const radius = size * 0.22;
+      ctx.beginPath();
+      ctx.moveTo(radius, 0);
+      ctx.lineTo(size - radius, 0);
+      ctx.quadraticCurveTo(size, 0, size, radius);
+      ctx.lineTo(size, size - radius);
+      ctx.quadraticCurveTo(size, size, size - radius, size);
+      ctx.lineTo(radius, size);
+      ctx.quadraticCurveTo(0, size, 0, size - radius);
+      ctx.lineTo(0, radius);
+      ctx.quadraticCurveTo(0, 0, radius, 0);
+      ctx.closePath();
+
+      const grad = ctx.createRadialGradient(
+        size * 0.35, size * 0.3, 0,
+        size * 0.5, size * 0.5, size * 0.7
+      );
+      grad.addColorStop(0, '#3399FF');
+      grad.addColorStop(1, '#005ECB');
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // Clip to rounded rect so nothing bleeds out
+      ctx.save();
+      ctx.clip();
+
+      // --- Subtle inner glow ---
+      const innerGlow = ctx.createRadialGradient(
+        size * 0.5, size * 0.35, 0,
+        size * 0.5, size * 0.5, size * 0.55
+      );
+      innerGlow.addColorStop(0, 'rgba(255,255,255,0.12)');
+      innerGlow.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = innerGlow;
+      ctx.fillRect(0, 0, size, size);
+
+      // --- Icon drawing (white) ---
+      ctx.fillStyle = '#FFFFFF';
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      const cx = size * 0.5;
+
+      // ---- Microphone head (rounded rectangle / capsule) ----
+      const micW = 72 * s;
+      const micH = 108 * s;
+      const micTop = 110 * s;
+      const micR = micW / 2;
+
+      ctx.beginPath();
+      ctx.moveTo(cx - micW / 2, micTop + micR);
+      ctx.lineTo(cx - micW / 2, micTop + micH - micR);
+      ctx.quadraticCurveTo(cx - micW / 2, micTop + micH, cx, micTop + micH);
+      ctx.quadraticCurveTo(cx + micW / 2, micTop + micH, cx + micW / 2, micTop + micH - micR);
+      ctx.lineTo(cx + micW / 2, micTop + micR);
+      ctx.quadraticCurveTo(cx + micW / 2, micTop, cx, micTop);
+      ctx.quadraticCurveTo(cx - micW / 2, micTop, cx - micW / 2, micTop + micR);
+      ctx.closePath();
+      ctx.fill();
+
+      // ---- Microphone grille lines ----
+      ctx.strokeStyle = 'rgba(0,100,220,0.25)';
+      ctx.lineWidth = 2.5 * s;
+      for (let i = 1; i <= 3; i++) {
+        const y = micTop + micR + (micH - 2 * micR) * (i / 4);
+        const halfW = Math.sqrt(Math.max(0, micR * micR - Math.pow(y - (micTop + micH - micR), 2)));
+        const lineHalfW = (i === 1 || i === 3) ? micW * 0.3 : micW * 0.38;
+        ctx.beginPath();
+        ctx.moveTo(cx - lineHalfW, y);
+        ctx.lineTo(cx + lineHalfW, y);
+        ctx.stroke();
+      }
+
+      ctx.strokeStyle = '#FFFFFF';
+
+      // ---- Microphone arc (U-shaped holder) ----
+      const arcW = 108 * s;
+      const arcTop = micTop + micH * 0.35;
+      const arcBot = micTop + micH + 24 * s;
+      ctx.lineWidth = 9 * s;
+
+      ctx.beginPath();
+      ctx.arc(cx, micTop + micH - micR, arcW / 2, 0, Math.PI, false);
+      ctx.stroke();
+
+      // ---- Vertical stem below arc ----
+      const stemTop = micTop + micH - micR + arcW / 2 - 2 * s;
+      const stemBot = stemTop + 60 * s;
+      ctx.lineWidth = 9 * s;
+      ctx.beginPath();
+      ctx.moveTo(cx, stemTop);
+      ctx.lineTo(cx, stemBot);
+      ctx.stroke();
+
+      // ---- Pen nib at the bottom ----
+      const nibTop = stemBot - 4 * s;
+      const nibH = 56 * s;
+      const nibW = 28 * s;
+
+      ctx.fillStyle = '#FFFFFF';
+      ctx.beginPath();
+      ctx.moveTo(cx - nibW / 2, nibTop);
+      ctx.lineTo(cx + nibW / 2, nibTop);
+      ctx.lineTo(cx, nibTop + nibH);
+      ctx.closePath();
+      ctx.fill();
+
+      // Nib slit
+      ctx.strokeStyle = 'rgba(0,100,220,0.3)';
+      ctx.lineWidth = 2.5 * s;
+      ctx.beginPath();
+      ctx.moveTo(cx, nibTop + 8 * s);
+      ctx.lineTo(cx, nibTop + nibH - 6 * s);
+      ctx.stroke();
+
+      // ---- Horizontal base bar ----
+      ctx.fillStyle = '#FFFFFF';
+      const baseW = 80 * s;
+      const baseH = 9 * s;
+      const baseY = stemBot - 2 * s;
+      ctx.beginPath();
+      ctx.moveTo(cx - baseW / 2, baseY - baseH / 2);
+      ctx.lineTo(cx + baseW / 2, baseY - baseH / 2);
+      ctx.lineTo(cx + baseW / 2, baseY + baseH / 2);
+      ctx.lineTo(cx - baseW / 2, baseY + baseH / 2);
+      ctx.closePath();
+      ctx.fill();
+
+      // ---- Small sound waves (left and right of mic head) ----
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.lineWidth = 5 * s;
+
+      const waveCy = micTop + micH * 0.45;
+
+      // Left waves
+      for (let i = 1; i <= 2; i++) {
+        const r = (42 + i * 24) * s;
+        ctx.beginPath();
+        ctx.arc(cx - micW / 2 - 8 * s, waveCy, r, -0.5, 0.5, false);
+        ctx.stroke();
+      }
+
+      // Right waves
+      for (let i = 1; i <= 2; i++) {
+        const r = (42 + i * 24) * s;
+        ctx.beginPath();
+        ctx.arc(cx + micW / 2 + 8 * s, waveCy, r, Math.PI - 0.5, Math.PI + 0.5, false);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
+    // Draw both canvases
+    const c192 = document.getElementById('canvas192');
+    const c512 = document.getElementById('canvas512');
+    drawIcon(c192);
+    drawIcon(c512);
+
+    // Wire up download links
+    function setupDownload(linkId, canvas) {
+      const link = document.getElementById(linkId);
+      link.href = canvas.toDataURL('image/png');
+    }
+
+    setupDownload('dl192', c192);
+    setupDownload('dl512', c512);
+
+    // Download both
+    document.getElementById('dlBoth').addEventListener('click', function () {
+      const dl192 = document.getElementById('dl192');
+      const dl512 = document.getElementById('dl512');
+      dl192.click();
+      setTimeout(function () {
+        dl512.click();
+        document.getElementById('status').textContent = 'Both icons downloaded.';
+      }, 500);
+    });
+  </script>
+</body>
+</html>
