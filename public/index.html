@@ -96,6 +96,10 @@
       <!-- Audio recording -->
       <div class="form-group">
         <label>음성 녹음</label>
+        <div class="chips" id="audio-type-chips" style="margin-bottom:8px">
+          <button class="chip on" data-at="voice">🎙️ 일반</button>
+          <button class="chip" data-at="meeting">🤝 회의</button>
+        </div>
         <div class="audio-attach-row">
           <button id="audio-rec-btn" class="btn-icon audio-rec-btn" title="녹음 시작">🎙️</button>
           <span id="audio-rec-status" class="audio-rec-status"></span>

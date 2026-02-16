@@ -9,8 +9,9 @@ var todayViewDate = new Date();
 var curSection = localStorage.getItem('vv_sec') || '메모';
 var myTags = [];
 var allTags = [];
-var pendingImages = []; // { file, objectUrl, serverId }
-var pendingAudios = []; // { blob, objectUrl, serverId }
+var pendingImages = []; // { file, objectUrl, serverId, dirName, type }
+var pendingAudios = []; // { blob, objectUrl, serverId, dirName, type }
+var audioType = 'voice'; // 'voice' or 'meeting'
 var audioRecorder = null;
 var audioRecordingTimer = null;
 var audioRecordingStart = 0;
@@ -198,13 +199,14 @@ function loadTags() {
 // ============================================================
 // Image Attachments (Phase 2)
 // ============================================================
-function handleImageSelect(files) {
+function handleImageSelect(files, type) {
   if (!files || !files.length) return;
+  type = type || 'photo';
   for (var i = 0; i < files.length; i++) {
     var file = files[i];
     if (!file.type.startsWith('image/')) continue;
     var objectUrl = URL.createObjectURL(file);
-    pendingImages.push({ file: file, objectUrl: objectUrl, serverId: null });
+    pendingImages.push({ file: file, objectUrl: objectUrl, serverId: null, dirName: null, type: type });
   }
   renderImagePreviews();
 }
@@ -389,7 +391,7 @@ function startAudioRecording() {
         stream.getTracks().forEach(function (t) { t.stop(); });
         var blob = new Blob(chunks, { type: audioRecorder.mimeType || 'audio/webm' });
         var objectUrl = URL.createObjectURL(blob);
-        pendingAudios.push({ blob: blob, objectUrl: objectUrl, serverId: null });
+        pendingAudios.push({ blob: blob, objectUrl: objectUrl, serverId: null, dirName: null, type: audioType });
         renderAudioPreviews();
         btn.classList.remove('recording');
         btn.title = '녹음 시작';
@@ -449,18 +451,20 @@ function uploadAudios() {
   pendingAudios.forEach(function (aud) {
     chain = chain.then(function () {
       if (aud.serverId) {
-        uploaded.push(aud.serverId);
+        uploaded.push({ filename: aud.serverId, dirName: aud.dirName });
         return;
       }
       var ext = '.webm';
       if (aud.blob.type && aud.blob.type.includes('mp4')) ext = '.mp4';
       var fd = new FormData();
       fd.append('audio', aud.blob, 'recording' + ext);
-      return apiUpload('/upload', fd).then(function (res) {
+      var uploadType = aud.type || 'voice';
+      return apiUpload('/upload?type=' + uploadType, fd).then(function (res) {
         if (res.ok) {
           return res.json().then(function (data) {
             aud.serverId = data.filename;
-            uploaded.push(data.filename);
+            aud.dirName = data.dirName;
+            uploaded.push({ filename: data.filename, dirName: data.dirName });
           });
         } else {
           console.error('Audio upload error:', res.status);
@@ -862,16 +866,18 @@ function uploadImages() {
   pendingImages.forEach(function (img) {
     chain = chain.then(function () {
       if (img.serverId) {
-        uploaded.push(img.serverId);
+        uploaded.push({ filename: img.serverId, dirName: img.dirName });
         return;
       }
       var fd = new FormData();
       fd.append('image', img.file, img.file.name || 'photo.jpg');
-      return apiUpload('/upload', fd).then(function (res) {
+      var uploadType = img.type || 'photo';
+      return apiUpload('/upload?type=' + uploadType, fd).then(function (res) {
         if (res.ok) {
           return res.json().then(function (data) {
             img.serverId = data.filename;
-            uploaded.push(data.filename);
+            img.dirName = data.dirName;
+            uploaded.push({ filename: data.filename, dirName: data.dirName });
           });
         } else {
           console.error('Upload error:', res.status);
@@ -1910,12 +1916,21 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // Image inputs
   document.getElementById('image-input').addEventListener('change', function (e) {
-    handleImageSelect(e.target.files);
+    handleImageSelect(e.target.files, 'photo');
     e.target.value = '';
   });
   document.getElementById('gallery-input').addEventListener('change', function (e) {
-    handleImageSelect(e.target.files);
+    handleImageSelect(e.target.files, 'screenshot');
     e.target.value = '';
+  });
+
+  // Audio type chips
+  document.getElementById('audio-type-chips').addEventListener('click', function (e) {
+    var chip = e.target.closest('.chip');
+    if (!chip) return;
+    document.querySelectorAll('#audio-type-chips .chip').forEach(function (c) { c.classList.remove('on'); });
+    chip.classList.add('on');
+    audioType = chip.getAttribute('data-at');
   });
 
   // Audio recording button

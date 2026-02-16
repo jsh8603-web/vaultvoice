@@ -13,6 +13,25 @@ const API_KEY = process.env.API_KEY;
 const DAILY_DIR = path.join(VAULT_PATH, '10.Daily Notes');
 const ATTACHMENT_DIR_NAME = process.env.ATTACHMENT_DIR || '99.Attachments';
 const ATTACHMENT_DIR = path.join(VAULT_PATH, ATTACHMENT_DIR_NAME);
+
+// File-type specific directories
+const PHOTO_DIR_NAME = '10.Daily Photos';
+const SCREENSHOT_DIR_NAME = '99.Screenshots';
+const VOICE_DIR_NAME = '99.VoiceNotes';
+const MEETING_DIR_NAME = '99.MeetingRecordings';
+const PHOTO_DIR = path.join(VAULT_PATH, PHOTO_DIR_NAME);
+const SCREENSHOT_DIR = path.join(VAULT_PATH, SCREENSHOT_DIR_NAME);
+const VOICE_DIR = path.join(VAULT_PATH, VOICE_DIR_NAME);
+const MEETING_DIR = path.join(VAULT_PATH, MEETING_DIR_NAME);
+
+const MEDIA_DIRS = {
+  photo: { name: PHOTO_DIR_NAME, path: PHOTO_DIR },
+  screenshot: { name: SCREENSHOT_DIR_NAME, path: SCREENSHOT_DIR },
+  voice: { name: VOICE_DIR_NAME, path: VOICE_DIR },
+  meeting: { name: MEETING_DIR_NAME, path: MEETING_DIR },
+  default: { name: ATTACHMENT_DIR_NAME, path: ATTACHMENT_DIR }
+};
+
 const MAX_UPLOAD_SIZE = parseInt(process.env.MAX_UPLOAD_SIZE || '10') * 1024 * 1024; // MB to bytes
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const OBSIDIAN_REST_URL = process.env.OBSIDIAN_REST_URL || 'http://localhost:27123';
@@ -70,13 +89,18 @@ app.use('/api/upload', uploadLimiter);
 app.use('/api/search', searchLimiter);
 app.use('/api/vm/search', searchLimiter);
 
-// ---- Multer setup for image upload ----
-if (!fs.existsSync(ATTACHMENT_DIR)) {
-  fs.mkdirSync(ATTACHMENT_DIR, { recursive: true });
-}
+// ---- Ensure media directories exist ----
+Object.values(MEDIA_DIRS).forEach(d => {
+  if (!fs.existsSync(d.path)) fs.mkdirSync(d.path, { recursive: true });
+});
 
+// ---- Multer setup for file upload ----
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, ATTACHMENT_DIR),
+  destination: (req, file, cb) => {
+    const type = req.query.type || 'default';
+    const dir = MEDIA_DIRS[type] || MEDIA_DIRS.default;
+    cb(null, dir.path);
+  },
   filename: (req, file, cb) => {
     const ts = Math.floor(Date.now() / 1000);
     const short = uuidv4().split('-')[0];
@@ -275,17 +299,21 @@ app.post('/api/daily/:date', (req, res) => {
     newEntry = `- ${content.trim()} *(${timestamp})*`;
   }
 
-  // Add image sub-items
+  // Add image sub-items (supports both string and {filename, dirName} object)
   if (images && images.length > 0) {
     for (const img of images) {
-      newEntry += `\n  - ![[${ATTACHMENT_DIR_NAME}/${img}]]`;
+      const filename = typeof img === 'string' ? img : img.filename;
+      const dir = typeof img === 'string' ? ATTACHMENT_DIR_NAME : (img.dirName || ATTACHMENT_DIR_NAME);
+      newEntry += `\n  - ![[${dir}/${filename}]]`;
     }
   }
 
-  // Add audio sub-items
+  // Add audio sub-items (supports both string and {filename, dirName} object)
   if (audios && audios.length > 0) {
     for (const aud of audios) {
-      newEntry += `\n  - 🎙️ ![[${ATTACHMENT_DIR_NAME}/${aud}]]`;
+      const filename = typeof aud === 'string' ? aud : aud.filename;
+      const dir = typeof aud === 'string' ? ATTACHMENT_DIR_NAME : (aud.dirName || ATTACHMENT_DIR_NAME);
+      newEntry += `\n  - 🎙️ ![[${dir}/${filename}]]`;
     }
   }
 
@@ -315,11 +343,14 @@ app.post('/api/upload', (req, res, next) => {
       console.error('[UPLOAD] No file in request');
       return res.status(400).json({ error: 'No file provided' });
     }
-    console.log('[UPLOAD] Success:', file.filename, file.size, 'bytes');
+    const type = req.query.type || 'default';
+    const dir = MEDIA_DIRS[type] || MEDIA_DIRS.default;
+    console.log('[UPLOAD] Success:', file.filename, file.size, 'bytes', 'dir:', dir.name);
     res.json({
       success: true,
       filename: file.filename,
-      path: `${ATTACHMENT_DIR_NAME}/${file.filename}`
+      dirName: dir.name,
+      path: `${dir.name}/${file.filename}`
     });
   });
 });
@@ -333,11 +364,14 @@ app.get('/api/attachments/:filename', (req, res) => {
   if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
     return res.status(400).json({ error: 'Invalid filename' });
   }
-  const filePath = path.join(ATTACHMENT_DIR, filename);
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ error: 'File not found' });
+  // Search across all media directories
+  for (const dir of Object.values(MEDIA_DIRS)) {
+    const filePath = path.join(dir.path, filename);
+    if (fs.existsSync(filePath)) {
+      return res.sendFile(filePath);
+    }
   }
-  res.sendFile(filePath);
+  return res.status(404).json({ error: 'File not found' });
 });
 
 // ============================================================
@@ -504,9 +538,13 @@ app.post('/api/ai/analyze-image', async (req, res) => {
   }
   if (!filename) return res.status(400).json({ error: 'Filename required' });
 
-  // Read file as base64
-  const filePath = path.join(ATTACHMENT_DIR, filename);
-  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' });
+  // Read file as base64 (search across all media directories)
+  let filePath = null;
+  for (const dir of Object.values(MEDIA_DIRS)) {
+    const candidate = path.join(dir.path, filename);
+    if (fs.existsSync(candidate)) { filePath = candidate; break; }
+  }
+  if (!filePath) return res.status(404).json({ error: 'File not found' });
 
   try {
     const fileBuffer = fs.readFileSync(filePath);
