@@ -15,10 +15,10 @@ const ATTACHMENT_DIR_NAME = process.env.ATTACHMENT_DIR || '99.Attachments';
 const ATTACHMENT_DIR = path.join(VAULT_PATH, ATTACHMENT_DIR_NAME);
 
 // File-type specific directories
-const PHOTO_DIR_NAME = '10.Daily Photos';
-const SCREENSHOT_DIR_NAME = '99.Screenshots';
-const VOICE_DIR_NAME = '99.VoiceNotes';
-const MEETING_DIR_NAME = '99.MeetingRecordings';
+const PHOTO_DIR_NAME = '02.areas/daily media/daily photos';
+const SCREENSHOT_DIR_NAME = '02.areas/daily media/screenshots';
+const VOICE_DIR_NAME = '02.areas/voice notes';
+const MEETING_DIR_NAME = '02.areas/meetings/meeting recordings';
 const PHOTO_DIR = path.join(VAULT_PATH, PHOTO_DIR_NAME);
 const SCREENSHOT_DIR = path.join(VAULT_PATH, SCREENSHOT_DIR_NAME);
 const VOICE_DIR = path.join(VAULT_PATH, VOICE_DIR_NAME);
