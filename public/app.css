@@ -186,6 +186,21 @@ textarea.input { resize: vertical; min-height: 140px; line-height: 1.5; }
   display: flex; align-items: center; justify-content: center;
 }
 
+/* ============ Video Preview ============ */
+.video-preview-list { display: flex; gap: 8px; flex-wrap: wrap; }
+.video-thumb {
+  position: relative; width: 140px; border-radius: 8px;
+  overflow: hidden; border: 1px solid var(--sep);
+}
+.video-thumb-remove {
+  position: absolute; top: 4px; right: 4px;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: rgba(0,0,0,0.6); color: #fff; border: none;
+  font-size: 16px; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  z-index: 5;
+}
+
 /* ============ Audio Recording ============ */
 .audio-attach-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
 .audio-rec-btn { transition: all 0.2s; }

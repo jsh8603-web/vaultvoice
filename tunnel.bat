@@ -6,10 +6,8 @@ echo  ============================
 echo   VaultVoice Cloudflare Tunnel
 echo  ============================
 echo.
-echo   https://vault.wwwmoksu.com
+echo   Quick Tunnel 모드 (도메인 불필요)
+echo   아래 출력에서 trycloudflare.com URL을 확인하세요.
 echo.
-echo   이 주소는 고정입니다.
-echo   아이폰 홈 화면에 추가하면 항상 같은 주소로 접속됩니다.
-echo.
-npx cloudflared tunnel --config .cloudflared\config.yml run
+npx cloudflared tunnel --url http://localhost:9097
 pause

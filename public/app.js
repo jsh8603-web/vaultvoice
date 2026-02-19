@@ -10,6 +10,7 @@ var curSection = localStorage.getItem('vv_sec') || '메모';
 var myTags = [];
 var allTags = [];
 var pendingImages = []; // { file, objectUrl, serverId }
+var pendingVideos = []; // { file, objectUrl, serverId }
 var pendingAudios = []; // { blob, objectUrl, serverId }
 var audioRecorder = null;
 var audioRecordingTimer = null;
@@ -354,6 +355,71 @@ style.textContent = `
 }
 `;
 document.head.appendChild(style);
+
+// ============================================================
+// Video Attachments
+// ============================================================
+function handleVideoSelect(files) {
+  if (!files || !files.length) return;
+  for (var i = 0; i < files.length; i++) {
+    var file = files[i];
+    if (!file.type.startsWith('video/')) continue;
+    var objectUrl = URL.createObjectURL(file);
+    pendingVideos.push({ file: file, objectUrl: objectUrl, serverId: null });
+  }
+  renderVideoPreviews();
+}
+
+function removeVideo(idx) {
+  if (pendingVideos[idx]) {
+    URL.revokeObjectURL(pendingVideos[idx].objectUrl);
+    pendingVideos.splice(idx, 1);
+    renderVideoPreviews();
+  }
+}
+
+function renderVideoPreviews() {
+  var el = document.getElementById('video-preview');
+  el.innerHTML = pendingVideos.map(function (vid, idx) {
+    return '<div class="video-thumb">' +
+      '<video src="' + vid.objectUrl + '" style="width:100%;max-height:120px;border-radius:6px" controls></video>' +
+      '<button class="video-thumb-remove" data-idx="' + idx + '">&times;</button>' +
+      '</div>';
+  }).join('');
+  el.querySelectorAll('.video-thumb-remove').forEach(function (btn) {
+    btn.addEventListener('click', function () { removeVideo(parseInt(btn.getAttribute('data-idx'))); });
+  });
+}
+
+function uploadVideos() {
+  var uploaded = [];
+  var chain = Promise.resolve();
+
+  pendingVideos.forEach(function (vid) {
+    chain = chain.then(function () {
+      if (vid.serverId) {
+        uploaded.push(vid.serverId);
+        return;
+      }
+      var fd = new FormData();
+      fd.append('video', vid.file, vid.file.name || 'video.mp4');
+      return apiUpload('/upload', fd).then(function (res) {
+        if (res.ok) {
+          return res.json().then(function (data) {
+            vid.serverId = data.filename;
+            uploaded.push(data.filename);
+          });
+        } else {
+          console.error('Video upload error:', res.status);
+        }
+      }).catch(function (e) {
+        console.error('Video upload failed:', e);
+      });
+    });
+  });
+
+  return chain.then(function () { return uploaded; });
+}
 
 // ============================================================
 // Audio Recording
@@ -891,8 +957,8 @@ function uploadImages() {
 function doSave() {
   var text = document.getElementById('memo-text').value.trim();
   var fb = document.getElementById('save-fb');
-  if (!text && pendingImages.length === 0 && pendingAudios.length === 0) { document.getElementById('memo-text').focus(); return; }
-  if (!text) text = pendingAudios.length > 0 ? '(음성 녹음)' : '(이미지)';
+  if (!text && pendingImages.length === 0 && pendingVideos.length === 0 && pendingAudios.length === 0) { document.getElementById('memo-text').focus(); return; }
+  if (!text) text = pendingAudios.length > 0 ? '(음성 녹음)' : pendingVideos.length > 0 ? '(동영상)' : '(이미지)';
 
   var saveBtn = document.getElementById('save-btn');
   saveBtn.disabled = true;
@@ -940,7 +1006,19 @@ function proceedSave(text, saveBtn, fb) {
     uploadPromise = Promise.resolve([]);
   }
 
-  // Step 2: upload audios if any
+  // Step 2: upload videos if any
+  var videoUploadPromise;
+  if (pendingVideos.length > 0) {
+    saveBtn.textContent = '동영상 업로드 중...';
+    videoUploadPromise = uploadVideos().catch(function (e) {
+      console.error('Video upload error:', e);
+      return [];
+    });
+  } else {
+    videoUploadPromise = Promise.resolve([]);
+  }
+
+  // Step 3: upload audios if any
   var audioUploadPromise;
   if (pendingAudios.length > 0) {
     audioUploadPromise = uploadAudios().catch(function (e) {
@@ -951,9 +1029,10 @@ function proceedSave(text, saveBtn, fb) {
     audioUploadPromise = Promise.resolve([]);
   }
 
-  Promise.all([uploadPromise, audioUploadPromise]).then(function (results) {
+  Promise.all([uploadPromise, videoUploadPromise, audioUploadPromise]).then(function (results) {
     var imageFiles = results[0];
-    var audioFiles = results[1];
+    var videoFiles = results[1];
+    var audioFiles = results[2];
     saveBtn.textContent = '저장 중...';
 
     var body = {
@@ -961,6 +1040,7 @@ function proceedSave(text, saveBtn, fb) {
       tags: myTags,
       section: curSection,
       images: imageFiles,
+      videos: videoFiles,
       audios: audioFiles
     };
 
@@ -978,6 +1058,7 @@ function proceedSave(text, saveBtn, fb) {
         var msg = '저장 완료!';
         if (pendingImages.length > 0 && imageFiles.length === 0) msg += ' (이미지 업로드 실패)';
         else if (imageFiles.length > 0) msg += ' (이미지 ' + imageFiles.length + '개 포함)';
+        if (videoFiles.length > 0) msg += ' (동영상 ' + videoFiles.length + '개 포함)';
         if (audioFiles.length > 0) msg += ' (음성 ' + audioFiles.length + '개 포함)';
         fb.textContent = msg;
         fb.className = 'feedback ok';
@@ -987,6 +1068,9 @@ function proceedSave(text, saveBtn, fb) {
         pendingImages.forEach(function (img) { URL.revokeObjectURL(img.objectUrl); });
         pendingImages = [];
         renderImagePreviews();
+        pendingVideos.forEach(function (vid) { URL.revokeObjectURL(vid.objectUrl); });
+        pendingVideos = [];
+        renderVideoPreviews();
         pendingAudios.forEach(function (aud) { URL.revokeObjectURL(aud.objectUrl); });
         pendingAudios = [];
         renderAudioPreviews();
@@ -1915,6 +1999,16 @@ document.addEventListener('DOMContentLoaded', function () {
   });
   document.getElementById('gallery-input').addEventListener('change', function (e) {
     handleImageSelect(e.target.files);
+    e.target.value = '';
+  });
+
+  // Video inputs
+  document.getElementById('video-input').addEventListener('change', function (e) {
+    handleVideoSelect(e.target.files);
+    e.target.value = '';
+  });
+  document.getElementById('video-gallery-input').addEventListener('change', function (e) {
+    handleVideoSelect(e.target.files);
     e.target.value = '';
   });
 

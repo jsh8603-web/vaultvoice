@@ -11,8 +11,14 @@ const PORT = process.env.PORT || 3939;
 const VAULT_PATH = process.env.VAULT_PATH;
 const API_KEY = process.env.API_KEY;
 const DAILY_DIR = path.join(VAULT_PATH, '10.Daily Notes');
+const DAILY_PHOTOS_DIR = path.join(VAULT_PATH, '10.Daily Photos');
+const DAILY_VIDEOS_DIR = path.join(VAULT_PATH, '10.Daily Videos');
 const ATTACHMENT_DIR_NAME = process.env.ATTACHMENT_DIR || '99.Attachments';
 const ATTACHMENT_DIR = path.join(VAULT_PATH, ATTACHMENT_DIR_NAME);
+const PHOTO_DIR_NAME = '99.DailyPhotos';
+const PHOTO_DIR = path.join(VAULT_PATH, PHOTO_DIR_NAME);
+const VIDEO_DIR_NAME = '99.DailyVideos';
+const VIDEO_DIR = path.join(VAULT_PATH, VIDEO_DIR_NAME);
 const MAX_UPLOAD_SIZE = parseInt(process.env.MAX_UPLOAD_SIZE || '10') * 1024 * 1024; // MB to bytes
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const OBSIDIAN_REST_URL = process.env.OBSIDIAN_REST_URL || 'http://localhost:27123';
@@ -70,13 +76,19 @@ app.use('/api/upload', uploadLimiter);
 app.use('/api/search', searchLimiter);
 app.use('/api/vm/search', searchLimiter);
 
-// ---- Multer setup for image upload ----
-if (!fs.existsSync(ATTACHMENT_DIR)) {
-  fs.mkdirSync(ATTACHMENT_DIR, { recursive: true });
+// ---- Multer setup for image/video/audio upload ----
+for (const dir of [ATTACHMENT_DIR, PHOTO_DIR, VIDEO_DIR]) {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
 }
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, ATTACHMENT_DIR),
+  destination: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, PHOTO_DIR);
+    else if (file.mimetype.startsWith('video/')) cb(null, VIDEO_DIR);
+    else cb(null, ATTACHMENT_DIR);
+  },
   filename: (req, file, cb) => {
     const ts = Math.floor(Date.now() / 1000);
     const short = uuidv4().split('-')[0];
@@ -88,8 +100,8 @@ const upload = multer({
   storage,
   limits: { fileSize: MAX_UPLOAD_SIZE },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/') || file.mimetype.startsWith('audio/')) cb(null, true);
-    else cb(new Error('Only image or audio files allowed'));
+    if (file.mimetype.startsWith('image/') || file.mimetype.startsWith('audio/') || file.mimetype.startsWith('video/')) cb(null, true);
+    else cb(new Error('Only image, video, or audio files allowed'));
   }
 });
 
@@ -251,22 +263,22 @@ app.post('/api/daily/:date', (req, res) => {
     return res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD' });
   }
 
-  const { content, tags = [], section = '메모', images = [], audios = [], priority, due } = req.body;
+  const { content, tags = [], section = '메모', images = [], videos = [], audios = [], priority, due } = req.body;
   if (!content || !content.trim()) {
     return res.status(400).json({ error: 'Content is required' });
   }
 
-  // Ensure daily dir exists
-  if (!fs.existsSync(DAILY_DIR)) {
-    fs.mkdirSync(DAILY_DIR, { recursive: true });
+  // Ensure dirs exist
+  for (const dir of [DAILY_DIR, DAILY_PHOTOS_DIR, DAILY_VIDEOS_DIR]) {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   }
 
   const filePath = path.join(DAILY_DIR, `${date}.md`);
   const timestamp = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 
+  // --- Build text/audio entry for Daily Notes ---
   let newEntry;
   if (section === '오늘할일') {
-    // Todo format with Dataview-compatible inline metadata
     let meta = '';
     if (priority) meta += ` [priority::${priority}]`;
     if (due) meta += ` [due::${due}]`;
@@ -275,14 +287,7 @@ app.post('/api/daily/:date', (req, res) => {
     newEntry = `- ${content.trim()} *(${timestamp})*`;
   }
 
-  // Add image sub-items
-  if (images && images.length > 0) {
-    for (const img of images) {
-      newEntry += `\n  - ![[${ATTACHMENT_DIR_NAME}/${img}]]`;
-    }
-  }
-
-  // Add audio sub-items
+  // Add audio sub-items (stays in Daily Notes)
   if (audios && audios.length > 0) {
     for (const aud of audios) {
       newEntry += `\n  - 🎙️ ![[${ATTACHMENT_DIR_NAME}/${aud}]]`;
@@ -295,6 +300,34 @@ app.post('/api/daily/:date', (req, res) => {
   } else {
     result = createNewNote(filePath, date, section, newEntry, tags);
     invalidateFileCache();
+  }
+
+  // --- Save photos to 10.Daily Photos/{date}.md ---
+  if (images && images.length > 0) {
+    const photoFilePath = path.join(DAILY_PHOTOS_DIR, `${date}.md`);
+    let photoEntry = `- ${content.trim()} *(${timestamp})*`;
+    for (const img of images) {
+      photoEntry += `\n  - ![[${PHOTO_DIR_NAME}/${img}]]`;
+    }
+    if (fs.existsSync(photoFilePath)) {
+      appendToExisting(photoFilePath, '사진', photoEntry, tags);
+    } else {
+      createMediaNote(photoFilePath, date, '사진', photoEntry, tags);
+    }
+  }
+
+  // --- Save videos to 10.Daily Videos/{date}.md ---
+  if (videos && videos.length > 0) {
+    const videoFilePath = path.join(DAILY_VIDEOS_DIR, `${date}.md`);
+    let videoEntry = `- ${content.trim()} *(${timestamp})*`;
+    for (const vid of videos) {
+      videoEntry += `\n  - ![[${VIDEO_DIR_NAME}/${vid}]]`;
+    }
+    if (fs.existsSync(videoFilePath)) {
+      appendToExisting(videoFilePath, '동영상', videoEntry, tags);
+    } else {
+      createMediaNote(videoFilePath, date, '동영상', videoEntry, tags);
+    }
   }
 
   res.json({ success: true, date, section, ...result });
@@ -315,11 +348,17 @@ app.post('/api/upload', (req, res, next) => {
       console.error('[UPLOAD] No file in request');
       return res.status(400).json({ error: 'No file provided' });
     }
-    console.log('[UPLOAD] Success:', file.filename, file.size, 'bytes');
+    console.log('[UPLOAD] Success:', file.filename, file.size, 'bytes', file.mimetype);
+    let type = 'audio';
+    let dirName = ATTACHMENT_DIR_NAME;
+    if (file.mimetype.startsWith('image/')) { type = 'image'; dirName = PHOTO_DIR_NAME; }
+    else if (file.mimetype.startsWith('video/')) { type = 'video'; dirName = VIDEO_DIR_NAME; }
     res.json({
       success: true,
       filename: file.filename,
-      path: `${ATTACHMENT_DIR_NAME}/${file.filename}`
+      type,
+      dirName,
+      path: `${dirName}/${file.filename}`
     });
   });
 });
@@ -333,7 +372,24 @@ app.get('/api/attachments/:filename', (req, res) => {
   if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
     return res.status(400).json({ error: 'Invalid filename' });
   }
-  const filePath = path.join(ATTACHMENT_DIR, filename);
+  // Search across all attachment directories
+  for (const dir of [ATTACHMENT_DIR, PHOTO_DIR, VIDEO_DIR]) {
+    const filePath = path.join(dir, filename);
+    if (fs.existsSync(filePath)) {
+      return res.sendFile(filePath);
+    }
+  }
+  return res.status(404).json({ error: 'File not found' });
+});
+
+app.get('/api/attachments/:type/:filename', (req, res) => {
+  const { type, filename } = req.params;
+  if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    return res.status(400).json({ error: 'Invalid filename' });
+  }
+  const dirMap = { photo: PHOTO_DIR, video: VIDEO_DIR, audio: ATTACHMENT_DIR };
+  const dir = dirMap[type] || ATTACHMENT_DIR;
+  const filePath = path.join(dir, filename);
   if (!fs.existsSync(filePath)) {
     return res.status(404).json({ error: 'File not found' });
   }
@@ -1894,6 +1950,17 @@ function getDayName(dateStr) {
   const days = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
   const d = new Date(dateStr + 'T00:00:00');
   return days[d.getDay()];
+}
+
+function createMediaNote(filePath, date, section, entry, tags) {
+  const allTags = ['daily', ...tags.filter(t => t !== 'daily')];
+  const unique = [...new Set(allTags)];
+  const fm = { '날짜': date, tags: unique };
+  const dayName = getDayName(date);
+  let body = `\n# ${date} (${dayName})\n\n## ${section}\n\n${entry}\n\n`;
+  const content = serializeFrontmatter(fm) + body;
+  fs.writeFileSync(filePath, content, 'utf-8');
+  return { created: true };
 }
 
 function createNewNote(filePath, date, section, entry, tags) {
