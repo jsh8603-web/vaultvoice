@@ -75,11 +75,12 @@ app.use('/api', (req, res, next) => {
 });
 
 // ---- Rate Limiting ----
+const isTestEnv = process.env.NODE_ENV === 'test' || PORT === '3939';
 const rateLimitMsg = { error: 'Too many requests, please try again later' };
-const generalLimiter = rateLimit({ windowMs: 60 * 1000, max: 100, message: rateLimitMsg, standardHeaders: true, legacyHeaders: false });
-const aiLimiter = rateLimit({ windowMs: 60 * 1000, max: 20, message: rateLimitMsg, standardHeaders: true, legacyHeaders: false });
-const uploadLimiter = rateLimit({ windowMs: 60 * 1000, max: 10, message: rateLimitMsg, standardHeaders: true, legacyHeaders: false });
-const searchLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, message: rateLimitMsg, standardHeaders: true, legacyHeaders: false });
+const generalLimiter = rateLimit({ windowMs: 60 * 1000, max: isTestEnv ? 1000 : 100, message: rateLimitMsg, standardHeaders: true, legacyHeaders: false });
+const aiLimiter = rateLimit({ windowMs: 60 * 1000, max: isTestEnv ? 200 : 20, message: rateLimitMsg, standardHeaders: true, legacyHeaders: false });
+const uploadLimiter = rateLimit({ windowMs: 60 * 1000, max: isTestEnv ? 100 : 10, message: rateLimitMsg, standardHeaders: true, legacyHeaders: false });
+const searchLimiter = rateLimit({ windowMs: 60 * 1000, max: isTestEnv ? 300 : 30, message: rateLimitMsg, standardHeaders: true, legacyHeaders: false });
 
 app.use('/api', generalLimiter);
 app.use('/api/ai', aiLimiter);

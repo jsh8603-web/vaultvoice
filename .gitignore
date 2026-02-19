@@ -3,3 +3,6 @@ node_modules
 .env.*
 !.env.example
 .cloudflared
+.claude/
+test-results/
+test-vault/
