@@ -263,6 +263,20 @@ textarea.input { resize: vertical; min-height: 140px; line-height: 1.5; }
   position: absolute; top: 8px; right: 10px;
   background: none; border: none; color: #fff; font-size: 22px; cursor: pointer;
 }
+
+/* ============ Calendar Event Detection ============ */
+.event-detect-banner {
+  margin: 8px 0; padding: 12px;
+  background: var(--bg-card); border: 1px solid var(--blue);
+  border-radius: var(--radius); animation: slide-down 0.3s ease;
+}
+.event-detect-content { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.event-detect-icon { font-size: 24px; flex-shrink: 0; }
+.event-detect-info { flex: 1; }
+.event-detect-title { font-size: 15px; font-weight: 600; }
+.event-detect-detail { font-size: 13px; color: var(--text2); margin-top: 2px; }
+.event-detect-actions { display: flex; gap: 8px; }
+.event-detect-actions .btn-sm { flex: 1; padding: 8px; font-size: 13px; border-radius: var(--radius); cursor: pointer; }
 .reminder-dialog-overlay {
   position: fixed; inset: 0; z-index: 200;
   background: rgba(0,0,0,0.5); display: flex;

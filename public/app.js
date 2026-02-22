@@ -998,6 +998,7 @@ function proceedSave(text, saveBtn, fb) {
         renderAudioPreviews();
         document.getElementById('todo-due').value = '';
         if (navigator.vibrate) navigator.vibrate(50);
+        detectCalendarEvent(text, memoDate);
       } else {
         return res.json().then(function (d) {
           fb.textContent = '실패: ' + (d.error || res.status);
@@ -1015,6 +1016,95 @@ function proceedSave(text, saveBtn, fb) {
     saveBtn.textContent = '저장';
     setTimeout(function () { fb.style.display = 'none'; }, 5000);
   });
+}
+
+// ============================================================
+// Calendar Event Detection
+// ============================================================
+var _pendingEvent = null;
+
+function detectCalendarEvent(text, date) {
+  if (!_calConnected) return;
+  if (!text || text.length < 10) return;
+  if (curSection === '오늘할일') return;
+  if (localStorage.getItem('vv_calAutoDetect') === 'off') return;
+
+  api('/ai/detect-event', {
+    method: 'POST',
+    body: JSON.stringify({ content: text, referenceDate: fmt(date) })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    if (d.success && d.detected && d.event) {
+      showEventBanner(d.event);
+    }
+  })
+  .catch(function() { /* silent fail */ });
+}
+
+function showEventBanner(event) {
+  _pendingEvent = event;
+  var days = ['일', '월', '화', '수', '목', '금', '토'];
+  var d = new Date(event.date + 'T00:00:00');
+  var dayName = days[d.getDay()];
+  var month = d.getMonth() + 1;
+  var day = d.getDate();
+
+  document.getElementById('event-detect-title').textContent = event.title;
+  var detail = month + '/' + day + ' (' + dayName + ')';
+  if (event.isAllDay) {
+    detail += ' 종일';
+  } else {
+    detail += ' ' + event.startTime + '~' + event.endTime;
+  }
+  document.getElementById('event-detect-detail').textContent = detail;
+  document.getElementById('event-detect-banner').style.display = '';
+}
+
+function registerDetectedEvent() {
+  if (!_pendingEvent) return;
+  var ev = _pendingEvent;
+  var body;
+  if (ev.isAllDay) {
+    var endDate = new Date(ev.date + 'T00:00:00');
+    endDate.setDate(endDate.getDate() + 1);
+    body = {
+      summary: ev.title,
+      start: ev.date,
+      end: endDate.toISOString().slice(0, 10),
+      isAllDay: true
+    };
+  } else {
+    body = {
+      summary: ev.title,
+      start: ev.date + 'T' + ev.startTime + ':00+09:00',
+      end: ev.date + 'T' + ev.endTime + ':00+09:00',
+      isAllDay: false
+    };
+  }
+
+  api('/calendar/add', {
+    method: 'POST',
+    body: JSON.stringify(body)
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    if (d.success) {
+      showToast('일정 등록 완료!');
+    } else {
+      showToast('일정 등록 실패: ' + (d.error || ''), 'warn');
+    }
+    dismissEventBanner();
+  })
+  .catch(function(e) {
+    showToast('일정 등록 실패: ' + e.message, 'warn');
+    dismissEventBanner();
+  });
+}
+
+function dismissEventBanner() {
+  document.getElementById('event-detect-banner').style.display = 'none';
+  _pendingEvent = null;
 }
 
 // ============================================================
@@ -1168,6 +1258,7 @@ function loadSettings() {
 }
 
 var _calWasConnected = false;
+var _calConnected = false;
 
 function checkCalendarStatus(silent) {
   api('/calendar/status')
@@ -1185,6 +1276,7 @@ function checkCalendarStatus(silent) {
         btn.textContent = '재연결';
         msg.style.display = 'none';
         _calWasConnected = true;
+        _calConnected = true;
       } else if (!d.hasEnv) {
         st.textContent = '설정 필요';
         st.className = 'badge err';
@@ -1209,6 +1301,7 @@ function checkCalendarStatus(silent) {
           msg.style.display = 'none';
         }
         _calWasConnected = false;
+        _calConnected = false;
       }
     })
     .catch(function() {});
@@ -1959,6 +2052,17 @@ document.addEventListener('DOMContentLoaded', function () {
   defSec.value = localStorage.getItem('vv_sec') || '메모';
   defSec.addEventListener('change', function () { localStorage.setItem('vv_sec', defSec.value); });
   document.getElementById('logout-btn').addEventListener('click', doLogout);
+
+  // Calendar auto-detect toggle
+  var calDetectToggle = document.getElementById('cal-auto-detect');
+  calDetectToggle.checked = localStorage.getItem('vv_calAutoDetect') !== 'off';
+  calDetectToggle.addEventListener('change', function() {
+    localStorage.setItem('vv_calAutoDetect', calDetectToggle.checked ? 'on' : 'off');
+  });
+
+  // Event detection banner buttons
+  document.getElementById('event-detect-add').addEventListener('click', registerDetectedEvent);
+  document.getElementById('event-detect-dismiss').addEventListener('click', dismissEventBanner);
 
   // AI buttons
   document.querySelectorAll('.ai-btn').forEach(function (btn) {

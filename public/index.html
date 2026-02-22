@@ -117,6 +117,19 @@
       </div>
       <button class="btn btn-save" id="save-btn">저장</button>
       <div id="save-fb" class="feedback" style="display:none"></div>
+      <div id="event-detect-banner" class="event-detect-banner" style="display:none">
+        <div class="event-detect-content">
+          <div class="event-detect-icon">📅</div>
+          <div class="event-detect-info">
+            <div id="event-detect-title" class="event-detect-title"></div>
+            <div id="event-detect-detail" class="event-detect-detail"></div>
+          </div>
+        </div>
+        <div class="event-detect-actions">
+          <button class="btn-sm" id="event-detect-add" style="background:var(--blue);color:#fff">등록</button>
+          <button class="btn-sm" id="event-detect-dismiss" style="background:var(--bg-card);color:var(--text2)">무시</button>
+        </div>
+      </div>
     </section>
 
     <!-- 오늘 -->
@@ -217,6 +230,13 @@
           <button class="btn-sm" id="cal-connect-btn" style="padding:8px 16px;font-size:13px">계정 연결</button>
         </div>
         <div id="cal-msg" style="font-size:11px;color:var(--red);display:none"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px">
+          <span style="font-size:13px">메모 저장 시 일정 자동 감지</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="cal-auto-detect" checked>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
       </div>
 
       <div class="s-group">

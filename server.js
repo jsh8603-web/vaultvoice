@@ -529,6 +529,92 @@ app.post('/api/ai/summarize', async (req, res) => {
 });
 
 // ============================================================
+// AI Calendar Event Detection
+// ============================================================
+app.post('/api/ai/detect-event', async (req, res) => {
+  const { content, referenceDate } = req.body;
+
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_key_here') {
+    return res.status(503).json({ error: 'Gemini API key not configured' });
+  }
+
+  if (!content || !referenceDate) {
+    return res.status(400).json({ error: 'content and referenceDate are required' });
+  }
+
+  const prompt = `오늘 날짜: ${referenceDate}
+
+아래 메모에서 일정/이벤트/약속/예약 정보를 감지하세요.
+일정이 없으면 {"detected": false}만 반환하세요.
+
+날짜 해석 규칙:
+1. "오늘" = ${referenceDate}
+2. "내일" = ${referenceDate}의 다음 날
+3. "모레" = ${referenceDate}의 2일 후
+4. "다음주 X요일" = ${referenceDate} 기준 다음 주 X요일
+5. "이번 X요일" = ${referenceDate}가 포함된 주의 X요일 (지났으면 다음 주)
+6. "X월 Y일" = 가장 가까운 미래 날짜
+
+시간 해석 규칙:
+1. 시간 명시 없음 → isAllDay: true
+2. "아침" = 09:00~10:00, "점심" = 12:00~13:00, "저녁" = 18:00~19:00, "오후" = 14:00~15:00
+3. "오후 N시" = N+12:00 (N<12), "오전 N시" = N:00
+4. 종료 시간 없으면 시작 + 1시간
+
+감지 대상: 미팅, 회의, 약속, 예약, 출장, 발표, 면접, 진료, 회식, 데이트, 수업 등 시간/장소가 있는 활동
+감지 제외: 일상 기록, 감정, 생각, 단순 메모, 할일 (예: "보고서 써야 함" → 일정 아님)
+
+JSON만 반환 (설명 없이):
+{"detected": true, "event": {"title": "일정 제목", "date": "YYYY-MM-DD", "startTime": "HH:MM", "endTime": "HH:MM", "isAllDay": false}}
+또는
+{"detected": false}
+
+메모:
+${content}`;
+
+  try {
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: 512
+          }
+        })
+      }
+    );
+
+    if (!geminiRes.ok) {
+      const err = await geminiRes.text();
+      console.error('Gemini detect-event error:', err);
+      return res.status(502).json({ error: 'Gemini API error' });
+    }
+
+    const data = await geminiRes.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+    try {
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return res.json({ success: true, detected: !!parsed.detected, event: parsed.event || null });
+      }
+    } catch (e) {
+      // JSON parse failed
+    }
+
+    res.json({ success: true, detected: false, event: null });
+  } catch (e) {
+    console.error('Detect-event error:', e);
+    res.status(500).json({ error: 'AI request failed: ' + e.message });
+  }
+});
+
+// ============================================================
 // AI Image Analysis (Smart Scan)
 // ============================================================
 app.post('/api/ai/analyze-image', async (req, res) => {
@@ -931,6 +1017,8 @@ async function executeAddCalendarEvent(args) {
   if (!token) return { result: 'Google Calendar이 연결되지 않았습니다.' };
 
   try {
+    const startObj = args.isAllDay ? { date: args.startTime } : { dateTime: args.startTime };
+    const endObj = args.isAllDay ? { date: args.endTime } : { dateTime: args.endTime };
     const calRes = await fetch(
       'https://www.googleapis.com/calendar/v3/calendars/primary/events',
       {
@@ -941,8 +1029,8 @@ async function executeAddCalendarEvent(args) {
         },
         body: JSON.stringify({
           summary: args.title,
-          start: { dateTime: args.startTime },
-          end: { dateTime: args.endTime }
+          start: startObj,
+          end: endObj
         })
       }
     );
@@ -1615,21 +1703,23 @@ app.post('/api/calendar/add', async (req, res) => {
   const token = await getAccessToken();
   if (!token) return res.status(401).json({ error: 'Not connected' });
   
-  const { summary, start, end } = req.body;
-  
+  const { summary, start, end, isAllDay } = req.body;
+
   try {
+    const startObj = isAllDay ? { date: start } : { dateTime: start };
+    const endObj = isAllDay ? { date: end } : { dateTime: end };
     const calRes = await fetch(
       'https://www.googleapis.com/calendar/v3/calendars/primary/events',
       {
         method: 'POST',
-        headers: { 
+        headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           summary,
-          start: { dateTime: start }, // Assume ISO string
-          end: { dateTime: end }
+          start: startObj,
+          end: endObj
         })
       }
     );
