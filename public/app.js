@@ -115,6 +115,7 @@ function showApp() {
   initVoiceRecognition();
   initReminders();
   initJarvis();
+  checkCalendarStatus();
 }
 
 // ============================================================
@@ -1024,7 +1025,6 @@ function proceedSave(text, saveBtn, fb) {
 var _pendingEvent = null;
 
 function detectCalendarEvent(text, date) {
-  if (!_calConnected) return;
   if (!text || text.length < 10) return;
   if (curSection === '오늘할일') return;
   if (localStorage.getItem('vv_calAutoDetect') === 'off') return;
@@ -1063,6 +1063,10 @@ function showEventBanner(event) {
 
 function registerDetectedEvent() {
   if (!_pendingEvent) return;
+  if (!_calConnected) {
+    showToast('캘린더가 연결되지 않았습니다. 설정에서 연결해주세요.', 'warn');
+    return;
+  }
   var ev = _pendingEvent;
   var body;
   if (ev.isAllDay) {

@@ -542,35 +542,20 @@ app.post('/api/ai/detect-event', async (req, res) => {
     return res.status(400).json({ error: 'content and referenceDate are required' });
   }
 
-  const prompt = `오늘 날짜: ${referenceDate}
+  const prompt = `당신은 메모에서 일정을 추출하는 어시스턴트입니다.
+오늘 날짜: ${referenceDate}
 
-아래 메모에서 일정/이벤트/약속/예약 정보를 감지하세요.
-일정이 없으면 {"detected": false}만 반환하세요.
+다음 메모를 읽고 일정/약속/미팅/예약이 포함되어 있으면 추출하세요.
 
-날짜 해석 규칙:
-1. "오늘" = ${referenceDate}
-2. "내일" = ${referenceDate}의 다음 날
-3. "모레" = ${referenceDate}의 2일 후
-4. "다음주 X요일" = ${referenceDate} 기준 다음 주 X요일
-5. "이번 X요일" = ${referenceDate}가 포함된 주의 X요일 (지났으면 다음 주)
-6. "X월 Y일" = 가장 가까운 미래 날짜
+날짜 변환: "오늘"=${referenceDate}, "내일"=+1일, "모레"=+2일, "다음주 X요일"=다음주 해당 요일, "이번주 X요일"=이번주 해당 요일(지났으면 다음주), 월/일만 있으면 가장 가까운 미래 날짜
+시간 변환: "아침"=09:00~10:00, "점심"=12:00~13:00, "저녁"=18:00~19:00, "오후"=14:00~15:00, 시간 없으면 isAllDay=true, 종료시간 없으면 시작+1시간
 
-시간 해석 규칙:
-1. 시간 명시 없음 → isAllDay: true
-2. "아침" = 09:00~10:00, "점심" = 12:00~13:00, "저녁" = 18:00~19:00, "오후" = 14:00~15:00
-3. "오후 N시" = N+12:00 (N<12), "오전 N시" = N:00
-4. 종료 시간 없으면 시작 + 1시간
+반드시 아래 JSON 형식 중 하나만 출력하세요:
+일정 있음: {"detected":true,"event":{"title":"제목","date":"YYYY-MM-DD","startTime":"HH:MM","endTime":"HH:MM","isAllDay":false}}
+종일 일정: {"detected":true,"event":{"title":"제목","date":"YYYY-MM-DD","startTime":"","endTime":"","isAllDay":true}}
+일정 없음: {"detected":false}
 
-감지 대상: 미팅, 회의, 약속, 예약, 출장, 발표, 면접, 진료, 회식, 데이트, 수업 등 시간/장소가 있는 활동
-감지 제외: 일상 기록, 감정, 생각, 단순 메모, 할일 (예: "보고서 써야 함" → 일정 아님)
-
-JSON만 반환 (설명 없이):
-{"detected": true, "event": {"title": "일정 제목", "date": "YYYY-MM-DD", "startTime": "HH:MM", "endTime": "HH:MM", "isAllDay": false}}
-또는
-{"detected": false}
-
-메모:
-${content}`;
+메모: "${content}"`;
 
   try {
     const geminiRes = await fetch(
@@ -596,7 +581,6 @@ ${content}`;
 
     const data = await geminiRes.json();
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
     try {
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
