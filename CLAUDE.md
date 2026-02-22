@@ -10,6 +10,19 @@ npm start            # 프로덕션 서버
 npx playwright test  # E2E 테스트 (.env.test 환경)
 ```
 
+## Deploy (commit/push 후 필수 — 서버 + 터널 검증까지)
+
+GCP VM (`jsh86@35.233.232.24`, port 3939):
+```bash
+# 1. 코드 배포 + 서버 재시작
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/google_compute_engine jsh86@35.233.232.24 'PATH=$PATH:/usr/local/bin; cd ~/vaultvoice-app && git pull && npm install --production && pm2 restart vaultvoice && sleep 2 && curl -s http://localhost:3939/api/health'
+# 2. 터널 URL 확인 (없으면 재시작)
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/google_compute_engine jsh86@35.233.232.24 'grep -oP "https://[a-z0-9-]+\.trycloudflare\.com" /tmp/cloudflared.log 2>/dev/null | tail -1'
+# 3. 외부 검증: curl -s https://{터널URL}/api/health
+# 4. 터널 URL 변경 시: 서버 .env GOOGLE_REDIRECT_URI + Google Cloud Console 리디렉션 URI 업데이트
+```
+절차/에러 상세: `memory/deployment.md` 참조
+
 ## Key Paths
 
 | 파일 | 역할 |
