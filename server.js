@@ -10,15 +10,17 @@ const app = express();
 const PORT = process.env.PORT || 3939;
 const VAULT_PATH = process.env.VAULT_PATH;
 const API_KEY = process.env.API_KEY;
-const DAILY_DIR = path.join(VAULT_PATH, '02. Areas/Daily Notes');
-const ATTACHMENT_DIR_NAME = process.env.ATTACHMENT_DIR || '99.Attachments';
+// All VaultVoice files go under 99_vaultvoice/ (staging inbox)
+const VV_BASE = '99_vaultvoice';
+const DAILY_DIR = path.join(VAULT_PATH, VV_BASE, 'daily-notes');
+const ATTACHMENT_DIR_NAME = VV_BASE + '/attachments';
 const ATTACHMENT_DIR = path.join(VAULT_PATH, ATTACHMENT_DIR_NAME);
 
 // File-type specific directories
-const PHOTO_DIR_NAME = '02. Areas/Daily Media/Daily Photos';
-const SCREENSHOT_DIR_NAME = '02. Areas/Daily Media/Screenshots';
-const VOICE_DIR_NAME = '02. Areas/Voice Notes';
-const MEETING_DIR_NAME = '02. Areas/Meetings/Meeting Recordings';
+const PHOTO_DIR_NAME = VV_BASE + '/photos';
+const SCREENSHOT_DIR_NAME = VV_BASE + '/screenshots';
+const VOICE_DIR_NAME = VV_BASE + '/voice';
+const MEETING_DIR_NAME = VV_BASE + '/meetings';
 const PHOTO_DIR = path.join(VAULT_PATH, PHOTO_DIR_NAME);
 const SCREENSHOT_DIR = path.join(VAULT_PATH, SCREENSHOT_DIR_NAME);
 const VOICE_DIR = path.join(VAULT_PATH, VOICE_DIR_NAME);

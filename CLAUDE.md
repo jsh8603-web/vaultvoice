@@ -23,6 +23,29 @@ ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/google
 ```
 절차/에러 상세: `memory/deployment.md` 참조
 
+## Architecture
+
+- 단일 `server.js`에 모든 API 엔드포인트 (40+ routes), 프론트는 `public/` SPA
+- 인증: `Authorization: Bearer {API_KEY}` 헤더 (health/reset/google-auth 제외)
+- AI: Gemini API 연동 (요약, 이미지 분석, 채팅, 일정 감지)
+- 외부 연동: Obsidian REST API, Google Calendar
+- 배포: GCP VM (PM2) + Cloudflare Tunnel (동적 URL)
+
+### Vault 저장 구조 (`99_vaultvoice/`)
+
+VaultVoice가 기록하는 모든 파일은 `{VAULT_PATH}/99_vaultvoice/` 하위에 저장된다.
+Obsidian에서 태깅 후 주제별 폴더로 이동하는 워크플로우 (임시 수신함 역할).
+
+```
+99_vaultvoice/
+├── daily-notes/       # 일일 메모 (YYYY-MM-DD.md)
+├── photos/            # 사진 업로드
+├── screenshots/       # 스크린샷
+├── voice/             # 음성 메모
+├── meetings/          # 회의 녹음
+└── attachments/       # 기타 첨부파일
+```
+
 ## Key Paths
 
 | 파일 | 역할 |
