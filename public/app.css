@@ -637,7 +637,7 @@ textarea.input { resize: vertical; min-height: 100px; line-height: 1.5; }
 
 /* ============ Jarvis FAB & Overlay ============ */
 .jarvis-fab {
-  position: fixed; bottom: 80px; right: 20px;
+  position: fixed; bottom: calc(var(--safe-bottom) + 76px); right: 18px;
   width: 54px; height: 54px; border-radius: 50%;
   background: linear-gradient(135deg, var(--accent), #5a7de8);
   color: white; border: none; font-size: 22px; font-weight: 700;
@@ -808,5 +808,5 @@ textarea.input { resize: vertical; min-height: 100px; line-height: 1.5; }
   .jarvis-input { padding: 10px 14px; font-size: 15px; }
   .jarvis-send-btn, .jarvis-mic-btn { width: 40px; height: 40px; }
   .jarvis-send-btn svg, .jarvis-mic-btn svg { width: 16px; height: 16px; }
-  .jarvis-fab { bottom: 74px; right: 14px; width: 50px; height: 50px; font-size: 20px; }
+  .jarvis-fab { bottom: calc(var(--safe-bottom) + 72px); right: 14px; width: 48px; height: 48px; font-size: 18px; }
 }

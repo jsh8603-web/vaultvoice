@@ -2545,6 +2545,7 @@ app.post('/api/process/audio', auth, uploadLimiter, upload.single('file'), async
     const timeout = setTimeout(() => controller.abort(), 300000); // 5 min
     let geminiResult = null;
     let geminiError = null;
+    let rawText = '';
 
     try {
       const result = await model.generateContent({
@@ -2558,15 +2559,38 @@ app.post('/api/process/audio', auth, uploadLimiter, upload.single('file'), async
         generationConfig: {
           responseMimeType: 'application/json',
           responseSchema: transcriptionSchema,
-          temperature: 0.1
+          temperature: 0.1,
+          maxOutputTokens: 65536
         }
       });
-      const rawText = result.response.text();
+      rawText = result.response.text();
       geminiResult = JSON.parse(rawText);
       console.log('[Audio] Gemini transcription OK, segments:', geminiResult.transcript?.length);
     } catch (e) {
-      geminiError = e;
-      console.error('[Audio] Gemini transcription failed:', e.message);
+      // Try partial JSON recovery for truncated responses
+      if (e.message && e.message.includes('JSON') && typeof rawText === 'string') {
+        try {
+          // Attempt to close truncated JSON array/object
+          let fixed = rawText;
+          if (!fixed.endsWith('}')) {
+            const lastBrace = fixed.lastIndexOf('}');
+            if (lastBrace > 0) fixed = fixed.substring(0, lastBrace + 1);
+            // Close open arrays/objects
+            const opens = (fixed.match(/\[/g) || []).length;
+            const closes = (fixed.match(/\]/g) || []).length;
+            for (let i = 0; i < opens - closes; i++) fixed += ']';
+            if (!fixed.endsWith('}')) fixed += '}';
+          }
+          geminiResult = JSON.parse(fixed);
+          console.log('[Audio] Gemini JSON recovered after truncation, segments:', geminiResult.transcript?.length);
+        } catch (e2) {
+          console.error('[Audio] Gemini JSON recovery also failed:', e2.message);
+        }
+      }
+      if (!geminiResult) {
+        geminiError = e;
+        console.error('[Audio] Gemini transcription failed:', e.message);
+      }
     } finally {
       clearTimeout(timeout);
     }
