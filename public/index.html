@@ -17,7 +17,7 @@
 <!-- Auth -->
 <div id="auth" class="screen">
   <div class="auth-box">
-    <div style="font-size:48px">🔐</div>
+    <div class="auth-logo">V</div>
     <h1>VaultVoice</h1>
     <p>API 키를 입력하세요</p>
     <input type="text" id="key-input" class="input" placeholder="API Key" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
@@ -44,11 +44,11 @@
       <div class="input-hub">
         <textarea id="mainInput" class="main-input" placeholder="무엇이든 입력하세요..." rows="3"></textarea>
         <div class="input-actions">
-          <button id="btnCamera" class="action-btn" title="카메라">📷</button>
-          <button id="btnGallery" class="action-btn" title="갤러리">🖼️</button>
-          <button id="btnRecord" class="action-btn" title="녹음">🎙️</button>
-          <button id="btnFile" class="action-btn" title="파일">📎</button>
-          <button id="btnUrl" class="action-btn" title="URL">🔗</button>
+          <button id="btnCamera" class="action-btn" title="카메라"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></button>
+          <button id="btnGallery" class="action-btn" title="갤러리"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></button>
+          <button id="btnRecord" class="action-btn" title="녹음"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
+          <button id="btnFile" class="action-btn" title="파일"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+          <button id="btnUrl" class="action-btn" title="URL"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button>
         </div>
         <!-- Hidden file inputs -->
         <input type="file" id="cameraInput" accept="image/*" style="display:none">
@@ -75,15 +75,15 @@
       <!-- Calendar event detection banner -->
       <div id="event-detect-banner" class="event-detect-banner" style="display:none">
         <div class="event-detect-content">
-          <div class="event-detect-icon">📅</div>
+          <div class="event-detect-icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="var(--blue)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></div>
           <div class="event-detect-info">
             <div id="event-detect-title" class="event-detect-title"></div>
             <div id="event-detect-detail" class="event-detect-detail"></div>
           </div>
         </div>
         <div class="event-detect-actions">
-          <button class="btn-sm" id="event-detect-add" style="background:var(--blue);color:#fff">등록</button>
-          <button class="btn-sm" id="event-detect-dismiss" style="background:var(--bg-card);color:var(--text2);border:1px solid var(--sep)">무시</button>
+          <button class="btn-sm" id="event-detect-add">등록</button>
+          <button class="btn-sm btn-ghost" id="event-detect-dismiss">무시</button>
         </div>
       </div>
     </section>
@@ -122,11 +122,11 @@
       <div class="search-filters">
         <select id="filterType" class="filter-select">
           <option value="">전체 유형</option>
-          <option value="voice">🎙️ 음성</option>
-          <option value="image">📷 이미지</option>
-          <option value="url">🔗 URL</option>
-          <option value="memo">✏️ 메모</option>
-          <option value="todo">✅ 할일</option>
+          <option value="voice">음성</option>
+          <option value="image">이미지</option>
+          <option value="url">URL</option>
+          <option value="memo">메모</option>
+          <option value="todo">할일</option>
         </select>
         <select id="filterDate" class="filter-select">
           <option value="7">최근 7일</option>
@@ -153,21 +153,21 @@
     <section id="p-settings" class="tab-panel">
       <!-- QR 코드 (아이폰 접속용) -->
       <div class="s-group">
-        <h2>QR 코드 (아이폰 스캔)</h2>
-        <input type="text" id="qr-url-input" class="input" placeholder="터널 주소 붙여넣기 (https://...trycloudflare.com)" style="margin-bottom:8px;font-size:13px">
+        <h2>QR 코드</h2>
+        <input type="text" id="qr-url-input" class="input" placeholder="터널 주소 붙여넣기" style="margin-bottom:8px;font-size:13px">
         <div id="qr-area" style="text-align:center">
-          <img id="qr-img" style="width:180px;height:180px;border-radius:8px;background:#fff;padding:8px" alt="QR">
+          <img id="qr-img" style="width:180px;height:180px;border-radius:12px;background:#fff;padding:8px" alt="QR">
           <div id="qr-url" style="font-size:11px;color:var(--text2);margin-top:6px;word-break:break-all"></div>
         </div>
       </div>
 
       <!-- 클립보드 공유 -->
       <div class="s-group">
-        <h2>클립보드 공유 (PC ↔ 아이폰)</h2>
+        <h2>클립보드 공유</h2>
         <textarea id="clip-text" class="input" rows="3" placeholder="여기에 텍스트 입력 후 보내기..."></textarea>
         <div style="display:flex;gap:8px;margin-top:8px">
           <button class="btn-sm" id="clip-send" style="flex:1">보내기</button>
-          <button class="btn-sm" id="clip-recv" style="flex:1;background:var(--green)">받기</button>
+          <button class="btn-sm btn-accent-green" id="clip-recv" style="flex:1">받기</button>
         </div>
         <div id="clip-status" style="font-size:12px;color:var(--text2);margin-top:6px;text-align:center"></div>
       </div>
@@ -182,24 +182,24 @@
       <!-- 기능 테스트 -->
       <div class="s-group">
         <h2>기능 테스트</h2>
-        <button class="btn-sm" id="run-test" style="width:100%;padding:12px;font-size:15px">전체 기능 점검</button>
+        <button class="btn-sm btn-full" id="run-test">전체 기능 점검</button>
         <div id="test-results" style="margin-top:10px"></div>
       </div>
 
       <!-- RAG Knowledge Base -->
       <div class="s-group">
         <h2>지식 베이스 (RAG)</h2>
-        <p style="font-size:13px;color:var(--text2);margin-bottom:8px">내 노트 내용을 AI가 이해하도록 학습시킵니다.</p>
-        <button class="btn-sm" id="reindex-btn" style="width:100%;padding:12px;font-size:14px;background:var(--purple)">지식 베이스 구축 (최근 50개)</button>
+        <p class="s-desc">내 노트 내용을 AI가 이해하도록 학습시킵니다.</p>
+        <button class="btn-sm btn-full btn-accent-purple" id="reindex-btn">지식 베이스 구축 (최근 50개)</button>
         <div id="reindex-status" style="margin-top:8px;font-size:12px;color:var(--text2)"></div>
       </div>
 
       <!-- Google Calendar -->
       <div class="s-group">
         <h2>구글 캘린더 연동</h2>
-        <p style="font-size:13px;color:var(--text2);margin-bottom:8px">일정 조회 및 추가를 위해 계정을 연결하세요.</p>
+        <p class="s-desc">일정 조회 및 추가를 위해 계정을 연결하세요.</p>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-          <span id="cal-status" class="badge" style="background:var(--bg-card);color:var(--text2)">미연결</span>
+          <span id="cal-status" class="badge badge-muted">미연결</span>
           <button class="btn-sm" id="cal-connect-btn" style="padding:8px 16px;font-size:13px">계정 연결</button>
         </div>
         <div id="cal-msg" style="font-size:11px;color:var(--red);display:none"></div>
@@ -218,6 +218,49 @@
         <div id="reminder-list" class="reminder-list"><div class="empty" style="padding:12px;font-size:13px">설정된 알림 없음</div></div>
       </div>
 
+      <!-- 기능 안내 -->
+      <div class="s-group">
+        <h2>기능 안내</h2>
+        <div class="help-list">
+          <div class="help-item">
+            <strong>입력 탭</strong>
+            <p>메모 작성의 중심 허브. 텍스트 메모, 사진 촬영/선택, 음성 녹음, 파일 첨부, URL 요약을 한 곳에서 처리합니다. 태그를 추가하고 저장하면 Obsidian 볼트에 개별 노트로 기록됩니다.</p>
+          </div>
+          <div class="help-item">
+            <strong>피드 탭</strong>
+            <p>날짜별로 저장된 메모를 카드 형태로 조회합니다. 좌우 화살표로 날짜 이동이 가능하며, AI 요약·태그 추천·분류 기능을 제공합니다.</p>
+          </div>
+          <div class="help-item">
+            <strong>검색 탭</strong>
+            <p>키워드 검색과 AI 시맨틱 검색을 지원합니다. 유형·날짜 필터로 범위를 좁힐 수 있고, 볼트 전체 검색 옵션도 있습니다.</p>
+          </div>
+          <div class="help-item">
+            <strong>관리 탭</strong>
+            <p>Obsidian 볼트의 파일을 직접 탐색·읽기·쓰기·이동·삭제할 수 있는 파일 관리자입니다.</p>
+          </div>
+          <div class="help-item">
+            <strong>QR 코드</strong>
+            <p>Cloudflare 터널 주소를 입력하면 QR 코드가 생성됩니다. 아이폰으로 스캔하여 빠르게 접속할 수 있습니다.</p>
+          </div>
+          <div class="help-item">
+            <strong>클립보드 공유</strong>
+            <p>PC와 아이폰 간 텍스트를 주고받습니다. 보내기/받기 버튼으로 양방향 동기화됩니다.</p>
+          </div>
+          <div class="help-item">
+            <strong>지식 베이스 (RAG)</strong>
+            <p>최근 노트를 AI가 학습하여 검색 정확도를 높입니다. 구축 후 AI 검색에서 맥락 기반 답변을 받을 수 있습니다.</p>
+          </div>
+          <div class="help-item">
+            <strong>구글 캘린더</strong>
+            <p>계정을 연결하면 일정 조회·추가가 가능합니다. 메모 저장 시 자동으로 일정을 감지하여 캘린더에 추가할 수 있습니다.</p>
+          </div>
+          <div class="help-item">
+            <strong>Jarvis (AI 어시스턴트)</strong>
+            <p>우측 하단 버튼을 눌러 AI 채팅을 시작합니다. 내 노트를 기반으로 질문에 답하고 작업을 도와줍니다.</p>
+          </div>
+        </div>
+      </div>
+
       <div class="s-group">
         <button class="btn-danger" id="logout-btn">로그아웃</button>
       </div>
@@ -227,7 +270,7 @@
     <!-- 관리 탭 (vault.html로 이동) -->
     <section id="p-vault" class="tab-panel">
       <div class="s-group" style="text-align:center;padding:32px 16px">
-        <div style="font-size:48px;margin-bottom:12px">📁</div>
+        <div class="vault-icon"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="var(--text2)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></div>
         <h2 style="font-size:16px;font-weight:600;color:var(--text);text-transform:none;margin-bottom:8px">볼트 관리자</h2>
         <p style="font-size:14px;color:var(--text2);margin-bottom:16px">파일 탐색, 읽기/쓰기, 이동, 백링크 등 볼트 전체 관리</p>
         <a href="/vault" class="btn" style="display:inline-block;width:auto;padding:12px 32px;text-decoration:none">볼트 관리자 열기</a>
@@ -239,23 +282,23 @@
   <!-- Tab Bar -->
   <nav class="tab-bar" id="tabBar">
     <button class="tab-btn active" data-tab="input">
-      <span class="tab-icon">✏️</span>
+      <svg class="tab-svg" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
       <span class="tab-label">입력</span>
     </button>
     <button class="tab-btn" data-tab="feed">
-      <span class="tab-icon">📋</span>
+      <svg class="tab-svg" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
       <span class="tab-label">피드</span>
     </button>
     <button class="tab-btn" data-tab="search">
-      <span class="tab-icon">🔍</span>
+      <svg class="tab-svg" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       <span class="tab-label">검색</span>
     </button>
     <button class="tab-btn" data-tab="settings">
-      <span class="tab-icon">⚙️</span>
+      <svg class="tab-svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       <span class="tab-label">설정</span>
     </button>
     <button class="tab-btn" data-tab="vault">
-      <span class="tab-icon">📁</span>
+      <svg class="tab-svg" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
       <span class="tab-label">관리</span>
     </button>
   </nav>
@@ -285,7 +328,7 @@
   </div>
   <div style="display:flex;gap:8px">
     <button class="btn" id="scan-apply" style="flex:1">메모에 추가</button>
-    <button class="btn-danger" id="scan-cancel" style="flex:1;background:var(--bg-card);border:1px solid var(--sep);color:var(--text)">닫기</button>
+    <button class="btn-ghost" id="scan-cancel" style="flex:1">닫기</button>
   </div>
 </div>
 
@@ -298,27 +341,27 @@
         <span id="jarvis-status" class="jarvis-status"></span>
       </div>
       <div class="jarvis-header-right">
-        <button id="jarvis-export" class="jarvis-header-btn" title="대화 내보내기">📥</button>
-        <button id="jarvis-reset" class="jarvis-header-btn" title="대화 초기화">🗑️</button>
+        <button id="jarvis-export" class="jarvis-header-btn" title="대화 내보내기"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
+        <button id="jarvis-reset" class="jarvis-header-btn" title="대화 초기화"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
         <button id="jarvis-close" class="jarvis-header-btn" title="닫기">&times;</button>
       </div>
     </div>
     <div id="jarvis-chat" class="jarvis-chat">
       <div class="jarvis-welcome">
-        <div class="jarvis-welcome-icon">🤖</div>
+        <div class="jarvis-welcome-icon">J</div>
         <div class="jarvis-welcome-text">안녕하세요! Jarvis입니다.<br>무엇을 도와드릴까요?</div>
         <div class="jarvis-welcome-hints">
-          <button class="jarvis-hint" data-msg="오늘 메모 보여줘">📋 오늘 메모 보기</button>
-          <button class="jarvis-hint" data-msg="할일 추가: 보고서 작성">✅ 할일 추가</button>
-          <button class="jarvis-hint" data-msg="이번 주 일정 알려줘">📅 이번 주 일정</button>
-          <button class="jarvis-hint" data-msg="볼트에서 회의록 검색해줘">🔍 볼트 검색</button>
+          <button class="jarvis-hint" data-msg="오늘 메모 보여줘">오늘 메모 보기</button>
+          <button class="jarvis-hint" data-msg="할일 추가: 보고서 작성">할일 추가</button>
+          <button class="jarvis-hint" data-msg="이번 주 일정 알려줘">이번 주 일정</button>
+          <button class="jarvis-hint" data-msg="볼트에서 회의록 검색해줘">볼트 검색</button>
         </div>
       </div>
     </div>
     <div class="jarvis-input-area">
       <input type="text" id="jarvis-input" class="jarvis-input" placeholder="메시지 입력..." autocomplete="off">
-      <button id="jarvis-send" class="jarvis-send-btn" title="전송">➤</button>
-      <button id="jarvis-mic" class="jarvis-mic-btn" title="음성 입력">🎙️</button>
+      <button id="jarvis-send" class="jarvis-send-btn" title="전송"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
+      <button id="jarvis-mic" class="jarvis-mic-btn" title="음성 입력"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
     </div>
   </div>
 </div>

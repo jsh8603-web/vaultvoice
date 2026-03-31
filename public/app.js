@@ -493,8 +493,8 @@ function renderFeedCards(notes) {
 }
 
 function typeIcon(type) {
-  var icons = { voice: '🎙️', image: '📷', url: '🔗', memo: '✏️', todo: '✅' };
-  return icons[type] || '📝';
+  var icons = { voice: 'Voice', image: 'Image', url: 'URL', memo: 'Memo', todo: 'Todo' };
+  return icons[type] || 'Note';
 }
 
 function loadTodosForFeed() {
@@ -528,7 +528,7 @@ function loadTodosForFeed() {
           '<button class="todo-check' + checkClass + '" data-line="' + todo.lineIndex + '" data-date="' + fmt(feedDate) + '" data-file="' + (todo.filename || '') + '">' + (todo.done ? '✓' : '') + '</button>' +
           '<span class="todo-text">' + esc(todo.text) + '</span>' +
           (meta.length ? '<span class="todo-meta">' + esc(meta.join(' · ')) + '</span>' : '') +
-          '<button class="todo-bell' + bellClass + '" data-line="' + todo.lineIndex + '" data-text="' + esc(todo.text) + '" title="알림 설정">🔔</button>' +
+          '<button class="todo-bell' + bellClass + '" data-line="' + todo.lineIndex + '" data-text="' + esc(todo.text) + '" title="알림 설정"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></button>' +
           '</div>';
       }).join('');
 
@@ -991,7 +991,7 @@ function checkReminders() {
 function showReminderBanner(text) {
   var banner = document.getElementById('reminder-banner');
   var bannerText = document.getElementById('reminder-banner-text');
-  bannerText.textContent = '🔔 ' + text;
+  bannerText.textContent = text;
   banner.style.display = '';
   if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
   try {
@@ -1145,7 +1145,7 @@ function runFeatureTest() {
 function renderTestResults(checks) {
   var el = document.getElementById('test-results');
   el.innerHTML = checks.map(function (c) {
-    var icon = c.ok ? '✅' : '❌';
+    var icon = c.ok ? '\u2714' : '\u2716';
     var color = c.ok ? 'var(--green)' : 'var(--red)';
     return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--sep)">' +
       '<span>' + icon + '</span>' +
@@ -1191,7 +1191,7 @@ function exportJarvisHistory() {
 var jarvisBtn = document.createElement('button');
 jarvisBtn.id = 'jarvis-btn';
 jarvisBtn.className = 'jarvis-fab';
-jarvisBtn.innerHTML = '🤖';
+jarvisBtn.innerHTML = 'J';
 jarvisBtn.onclick = openJarvis;
 document.body.appendChild(jarvisBtn);
 
@@ -1282,8 +1282,8 @@ function addJarvisTyping() {
 function addJarvisWelcome() {
   var div = document.createElement('div');
   div.className = 'jarvis-welcome';
-  div.innerHTML = '<div class="jarvis-welcome-icon">🤖</div><div class="jarvis-welcome-text">안녕하세요! Jarvis입니다.<br>무엇을 도와드릴까요?</div>' +
-    '<div class="jarvis-welcome-hints"><button class="jarvis-hint" data-msg="오늘 메모 보여줘">📋 오늘 메모 보기</button><button class="jarvis-hint" data-msg="할일 추가: 보고서 작성">✅ 할일 추가</button><button class="jarvis-hint" data-msg="이번 주 일정 알려줘">📅 이번 주 일정</button></div>';
+  div.innerHTML = '<div class="jarvis-welcome-icon">J</div><div class="jarvis-welcome-text">안녕하세요! Jarvis입니다.<br>무엇을 도와드릴까요?</div>' +
+    '<div class="jarvis-welcome-hints"><button class="jarvis-hint" data-msg="오늘 메모 보여줘">오늘 메모 보기</button><button class="jarvis-hint" data-msg="할일 추가: 보고서 작성">할일 추가</button><button class="jarvis-hint" data-msg="이번 주 일정 알려줘">이번 주 일정</button></div>';
   jarvisChat.appendChild(div);
 }
 function renderJarvisMd(text) {
@@ -1302,7 +1302,7 @@ function speak(text) {
   stopTTS();
   var sentences = text.match(/[^.!?。！？\n]+[.!?。！？]?/g) || [text];
   jarvisTTSActive = true;
-  setJarvisStatus('🔊 TTS 재생 중 (클릭으로 중단)');
+  setJarvisStatus('TTS 재생 중 (클릭으로 중단)');
   if (jarvisMic) jarvisMic.disabled = true;
   var idx = 0;
   function speakNext() {
@@ -1329,7 +1329,7 @@ function toggleJarvisMic() {
   jarvisRecog = new SpeechRecognition();
   jarvisRecog.lang = 'ko-KR'; jarvisRecog.continuous = true; jarvisRecog.interimResults = true;
   jarvisRecog.start();
-  jarvisMic.classList.add('recording'); setJarvisStatus('🎤 듣는 중...');
+  jarvisMic.classList.add('recording'); setJarvisStatus('듣는 중...');
   var finalTranscript = '';
   jarvisRecog.onresult = function (e) {
     var interim = '';
@@ -1338,7 +1338,7 @@ function toggleJarvisMic() {
       else interim += e.results[i][0].transcript;
     }
     jarvisInput.value = finalTranscript + interim;
-    if (interim) setJarvisStatus('🎤 ' + interim);
+    if (interim) setJarvisStatus(interim);
   };
   jarvisRecog.onend = function () {
     jarvisRecog = null; jarvisMic.classList.remove('recording'); setJarvisStatus('');
