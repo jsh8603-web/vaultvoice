@@ -1,4 +1,4 @@
-require('dotenv').config({ override: true });
+if (!process.env.DOTENV_LOADED) require('dotenv').config({ override: true });
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
@@ -259,14 +259,15 @@ app.get('/api/daily/:date', (req, res) => {
     return res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD' });
   }
 
-  const filePath = path.join(DAILY_DIR, `${date}.md`);
-  if (!fs.existsSync(filePath)) {
+  const notes = getNotesForDate(date);
+  if (notes.length === 0) {
     return res.status(404).json({ error: 'Note not found', date });
   }
 
-  const content = fs.readFileSync(filePath, 'utf-8');
-  const { frontmatter, body } = parseFrontmatter(content);
-  res.json({ date, frontmatter, body, raw: content });
+  const combined = combineNotes(notes);
+  // Merge all tags from all notes
+  const allTags = [...new Set(notes.flatMap(n => n.frontmatter.tags || []))];
+  res.json({ date, frontmatter: { tags: allTags }, body: combined, notes });
 });
 
 // ============================================================
@@ -283,26 +284,18 @@ app.post('/api/daily/:date', (req, res) => {
     return res.status(400).json({ error: 'Content is required' });
   }
 
-  // Ensure daily dir exists
-  if (!fs.existsSync(DAILY_DIR)) {
-    fs.mkdirSync(DAILY_DIR, { recursive: true });
-  }
-
-  const filePath = path.join(DAILY_DIR, `${date}.md`);
-  const timestamp = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
-
   let newEntry;
   if (section === '오늘할일') {
-    // Todo format with Dataview-compatible inline metadata
     let meta = '';
     if (priority) meta += ` [priority::${priority}]`;
     if (due) meta += ` [due::${due}]`;
     newEntry = `- [ ] ${content.trim()}${meta}`;
   } else {
+    const timestamp = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
     newEntry = `- ${content.trim()} *(${timestamp})*`;
   }
 
-  // Add image sub-items (supports both string and {filename, dirName} object)
+  // Add image sub-items
   if (images && images.length > 0) {
     for (const img of images) {
       const filename = typeof img === 'string' ? img : img.filename;
@@ -311,7 +304,7 @@ app.post('/api/daily/:date', (req, res) => {
     }
   }
 
-  // Add audio sub-items (supports both string and {filename, dirName} object)
+  // Add audio sub-items
   if (audios && audios.length > 0) {
     for (const aud of audios) {
       const filename = typeof aud === 'string' ? aud : aud.filename;
@@ -320,14 +313,7 @@ app.post('/api/daily/:date', (req, res) => {
     }
   }
 
-  let result;
-  if (fs.existsSync(filePath)) {
-    result = appendToExisting(filePath, section, newEntry, tags);
-  } else {
-    result = createNewNote(filePath, date, section, newEntry, tags);
-    invalidateFileCache();
-  }
-
+  const result = createAtomicNote(date, section, newEntry, tags);
   res.json({ success: true, date, section, ...result });
 });
 
@@ -386,37 +372,33 @@ app.get('/api/daily/:date/todos', (req, res) => {
     return res.status(400).json({ error: 'Invalid date format' });
   }
 
-  const filePath = path.join(DAILY_DIR, `${date}.md`);
-  if (!fs.existsSync(filePath)) {
-    return res.json({ todos: [] });
-  }
-
-  const content = fs.readFileSync(filePath, 'utf-8');
-  const lines = content.split('\n');
+  const notes = getNotesForDate(date);
   const todos = [];
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const todoMatch = line.match(/^- \[([ x])\] (.+)$/);
-    if (todoMatch) {
-      const done = todoMatch[1] === 'x';
-      let text = todoMatch[2];
+  for (const note of notes) {
+    const lines = note.raw.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const todoMatch = line.match(/^- \[([ x])\] (.+)$/);
+      if (todoMatch) {
+        const done = todoMatch[1] === 'x';
+        let text = todoMatch[2];
 
-      // Parse inline metadata
-      let priority = null;
-      let due = null;
-      const priorityMatch = text.match(/\[priority::([^\]]+)\]/);
-      const dueMatch = text.match(/\[due::([^\]]+)\]/);
-      if (priorityMatch) {
-        priority = priorityMatch[1];
-        text = text.replace(priorityMatch[0], '').trim();
-      }
-      if (dueMatch) {
-        due = dueMatch[1];
-        text = text.replace(dueMatch[0], '').trim();
-      }
+        let priority = null;
+        let due = null;
+        const priorityMatch = text.match(/\[priority::([^\]]+)\]/);
+        const dueMatch = text.match(/\[due::([^\]]+)\]/);
+        if (priorityMatch) {
+          priority = priorityMatch[1];
+          text = text.replace(priorityMatch[0], '').trim();
+        }
+        if (dueMatch) {
+          due = dueMatch[1];
+          text = text.replace(dueMatch[0], '').trim();
+        }
 
-      todos.push({ lineIndex: i, done, text, priority, due });
+        todos.push({ filename: note.filename, lineIndex: i, done, text, priority, due });
+      }
     }
   }
 
@@ -427,12 +409,26 @@ app.get('/api/daily/:date/todos', (req, res) => {
 // Toggle todo checkbox
 // ============================================================
 app.post('/api/todo/toggle', (req, res) => {
-  const { date, lineIndex } = req.body;
+  const { date, filename, lineIndex } = req.body;
   if (!date || lineIndex === undefined) {
     return res.status(400).json({ error: 'date and lineIndex are required' });
   }
 
-  const filePath = path.join(DAILY_DIR, `${date}.md`);
+  // Find the target file: use filename if provided, else search todo files for date
+  let filePath;
+  if (filename) {
+    filePath = path.join(DAILY_DIR, filename);
+  } else {
+    // Legacy fallback: find first todo file matching date
+    const notes = getNotesForDate(date);
+    const todoNote = notes.find(n => {
+      const lines = n.raw.split('\n');
+      return lineIndex < lines.length && lines[lineIndex].match(/^- \[([ x])\] /);
+    });
+    if (!todoNote) return res.status(404).json({ error: 'Todo not found' });
+    filePath = path.join(DAILY_DIR, todoNote.filename);
+  }
+
   if (!fs.existsSync(filePath)) {
     return res.status(404).json({ error: 'Note not found' });
   }
@@ -942,35 +938,25 @@ async function executeSearchNotes(query) {
 
 function executeReadDailyNote(dateStr) {
   const date = resolveDate(dateStr);
-  const f = path.join(DAILY_DIR, `${date}.md`);
-  if (fs.existsSync(f)) {
-    return { result: fs.readFileSync(f, 'utf-8').slice(0, 1500) };
+  const notes = getNotesForDate(date);
+  if (notes.length > 0) {
+    const combined = combineNotes(notes);
+    return { result: combined.slice(0, 1500) };
   }
   return { result: `${date} 날짜의 노트가 없습니다.` };
 }
 
 function executeAddTodo(args) {
   const date = resolveDate(args.date);
-  const f = path.join(DAILY_DIR, `${date}.md`);
   const entry = `- [ ] ${args.task} [priority::${args.priority || '보통'}]`;
-  if (fs.existsSync(f)) {
-    appendToExisting(f, '오늘할일', entry, []);
-  } else {
-    createNewNote(f, date, '오늘할일', entry, []);
-  }
+  createAtomicNote(date, '오늘할일', entry, []);
   return { result: `"${args.task}" 할일을 ${date}에 추가했습니다.` };
 }
 
 function executeAddMemo(args) {
   const date = resolveDate(args.date);
-  const f = path.join(DAILY_DIR, `${date}.md`);
-  const timestamp = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
-  const entry = `- ${args.content.trim()} *(${timestamp})*`;
-  if (fs.existsSync(f)) {
-    appendToExisting(f, '메모', entry, []);
-  } else {
-    createNewNote(f, date, '메모', entry, []);
-  }
+  const entry = `- ${args.content.trim()}`;
+  createAtomicNote(date, '메모', entry, []);
   return { result: `메모를 ${date}에 추가했습니다: "${args.content}"` };
 }
 
@@ -1914,10 +1900,9 @@ app.get('/api/tags', (req, res) => {
     return res.json({ tags: [] });
   }
 
-  const files = fs.readdirSync(DAILY_DIR).filter(f => f.endsWith('.md'));
-  const recent = files.sort().reverse().slice(0, 30);
+  const files = fs.readdirSync(DAILY_DIR).filter(f => f.endsWith('.md')).sort().reverse().slice(0, 100);
 
-  for (const file of recent) {
+  for (const file of files) {
     const raw = fs.readFileSync(path.join(DAILY_DIR, file), 'utf-8');
     const { frontmatter } = parseFrontmatter(raw);
     if (frontmatter.tags && Array.isArray(frontmatter.tags)) {
@@ -1942,17 +1927,33 @@ app.get('/api/notes/recent', (req, res) => {
     return res.json({ notes: [] });
   }
 
-  const files = fs.readdirSync(DAILY_DIR).filter(f => /^\d{4}-\d{2}-\d{2}\.md$/.test(f));
-  const notes = files
-    .sort()
-    .reverse()
+  const files = fs.readdirSync(DAILY_DIR).filter(f => f.endsWith('.md'));
+  // Extract unique dates and sort descending
+  const dateMap = {};
+  for (const f of files) {
+    const dateMatch = f.match(/^(\d{4}-\d{2}-\d{2})_/);
+    if (dateMatch) {
+      const date = dateMatch[1];
+      if (!dateMap[date]) dateMap[date] = [];
+      dateMap[date].push(f);
+    }
+  }
+
+  const notes = Object.entries(dateMap)
+    .sort((a, b) => b[0].localeCompare(a[0]))
     .slice(0, 7)
-    .map(file => {
-      const date = file.replace('.md', '');
-      const raw = fs.readFileSync(path.join(DAILY_DIR, file), 'utf-8');
-      const { frontmatter, body } = parseFrontmatter(raw);
-      const preview = body.split('\n').filter(l => l.trim()).slice(0, 3).join(' ').slice(0, 120);
-      return { date, tags: frontmatter.tags || [], preview };
+    .map(([date, dateFiles]) => {
+      const allTags = new Set();
+      const previews = [];
+      for (const file of dateFiles.sort()) {
+        const raw = fs.readFileSync(path.join(DAILY_DIR, file), 'utf-8');
+        const { frontmatter, body } = parseFrontmatter(raw);
+        (frontmatter.tags || []).forEach(t => allTags.add(t));
+        const lines = body.split('\n').filter(l => l.trim());
+        if (lines.length > 0) previews.push(lines[0]);
+      }
+      const preview = previews.join(' ').slice(0, 120);
+      return { date, tags: [...allTags], preview, noteCount: dateFiles.length };
     });
 
   res.json({ notes });
@@ -2011,68 +2012,62 @@ function getDayName(dateStr) {
   return days[d.getDay()];
 }
 
-function createNewNote(filePath, date, section, entry, tags) {
+// Create an atomic note file (one entry = one file)
+function createAtomicNote(date, section, entry, tags) {
+  if (!fs.existsSync(DAILY_DIR)) {
+    fs.mkdirSync(DAILY_DIR, { recursive: true });
+  }
+
+  const now = new Date();
+  const timeStr = now.toTimeString().slice(0, 8).replace(/:/g, '');
+  const timeDisplay = now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+  const filename = `${date}_${timeStr}_${section}.md`;
+  const filePath = path.join(DAILY_DIR, filename);
+
   const allTags = ['daily', ...tags.filter(t => t !== 'daily')];
   const unique = [...new Set(allTags)];
 
-  const fm = { '날짜': date, tags: unique };
-  const dayName = getDayName(date);
-
-  let body = `\n# ${date} (${dayName})\n\n`;
-
-  if (section === '오늘할일') {
-    body += `## 오늘할일\n\n${entry}\n\n`;
-    body += `## 오늘 회고\n\n`;
-  } else if (section !== '오늘 회고') {
-    body += `## ${section}\n\n${entry}\n\n`;
-    body += `## 오늘 회고\n\n`;
-  } else {
-    body += `## 오늘 회고\n\n${entry}\n\n`;
-  }
+  const fm = { '날짜': date, '시간': `"${timeDisplay}"`, '섹션': section, tags: unique };
+  const body = `\n${entry}\n`;
 
   const content = serializeFrontmatter(fm) + body;
   fs.writeFileSync(filePath, content, 'utf-8');
-  return { created: true };
+  invalidateFileCache();
+  return { created: true, filename };
 }
 
-function appendToExisting(filePath, section, entry, tags) {
-  let raw = fs.readFileSync(filePath, 'utf-8');
-  const { frontmatter, body } = parseFrontmatter(raw);
+// Read all atomic notes for a given date, returns sorted array
+function getNotesForDate(date) {
+  if (!fs.existsSync(DAILY_DIR)) return [];
 
-  // Merge tags
-  const existingTags = Array.isArray(frontmatter.tags) ? frontmatter.tags : [];
-  const allTags = [...new Set([...existingTags, ...tags])];
-  frontmatter.tags = allTags;
+  const prefix = `${date}_`;
+  const files = fs.readdirSync(DAILY_DIR)
+    .filter(f => f.startsWith(prefix) && f.endsWith('.md'))
+    .sort();
 
-  // Find section in body
-  const sectionHeader = `## ${section}`;
-  const sectionIdx = body.indexOf(sectionHeader);
+  return files.map(f => {
+    const raw = fs.readFileSync(path.join(DAILY_DIR, f), 'utf-8');
+    const { frontmatter, body } = parseFrontmatter(raw);
+    return { filename: f, frontmatter, body: body.trim(), raw };
+  });
+}
 
-  let newBody;
-  if (sectionIdx !== -1) {
-    const afterHeader = sectionIdx + sectionHeader.length;
-    const nextSection = body.indexOf('\n## ', afterHeader);
-    if (nextSection !== -1) {
-      const beforeNext = body.substring(0, nextSection);
-      const afterNext = body.substring(nextSection);
-      newBody = beforeNext.trimEnd() + '\n' + entry + '\n\n' + afterNext.trimStart();
-    } else {
-      newBody = body.trimEnd() + '\n' + entry + '\n\n';
-    }
-  } else {
-    const reviewIdx = body.indexOf('## 오늘 회고');
-    if (reviewIdx !== -1) {
-      const before = body.substring(0, reviewIdx);
-      const after = body.substring(reviewIdx);
-      newBody = before.trimEnd() + '\n\n' + sectionHeader + '\n\n' + entry + '\n\n' + after;
-    } else {
-      newBody = body.trimEnd() + '\n\n' + sectionHeader + '\n\n' + entry + '\n\n';
-    }
+// Combine notes into a single body grouped by section (for display)
+function combineNotes(notes) {
+  const sections = {};
+  for (const note of notes) {
+    const sec = note.frontmatter['섹션'] || '메모';
+    if (!sections[sec]) sections[sec] = [];
+    sections[sec].push(note.body);
   }
 
-  const content = serializeFrontmatter(frontmatter) + newBody;
-  fs.writeFileSync(filePath, content, 'utf-8');
-  return { updated: true, tagsAdded: tags.filter(t => !existingTags.includes(t)) };
+  let combined = '';
+  const order = ['메모', '오늘할일', '오늘 회고'];
+  const keys = [...new Set([...order.filter(k => sections[k]), ...Object.keys(sections)])];
+  for (const sec of keys) {
+    combined += `## ${sec}\n\n${sections[sec].join('\n')}\n\n`;
+  }
+  return combined.trim();
 }
 
 // ============================================================

@@ -19,7 +19,7 @@ module.exports = defineConfig({
     },
   ],
   webServer: {
-    command: 'node -e "require(\'dotenv\').config({ path: \'.env.test\', override: true }); require(\'./server.js\')"',
+    command: 'node -e "require(\'dotenv\').config({ path: \'.env.test\', override: true }); process.env.DOTENV_LOADED=1; require(\'./server.js\')"',
     port: 3939,
     reuseExistingServer: true,
     timeout: 10000,

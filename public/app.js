@@ -1163,7 +1163,7 @@ function loadTodos() {
         var bellClass = hasReminder ? ' has-reminder' : '';
 
         return '<div class="todo-item' + pClass + doneClass + '">' +
-          '<button class="todo-check' + checkClass + '" data-line="' + todo.lineIndex + '" data-date="' + fmt(todayViewDate) + '">' + (todo.done ? '✓' : '') + '</button>' +
+          '<button class="todo-check' + checkClass + '" data-line="' + todo.lineIndex + '" data-date="' + fmt(todayViewDate) + '" data-file="' + (todo.filename || '') + '">' + (todo.done ? '✓' : '') + '</button>' +
           '<span class="todo-text">' + esc(todo.text) + '</span>' +
           (meta.length ? '<span class="todo-meta">' + esc(meta.join(' · ')) + '</span>' : '') +
           '<button class="todo-bell' + bellClass + '" data-line="' + todo.lineIndex + '" data-text="' + esc(todo.text) + '" title="알림 설정">🔔</button>' +
@@ -1173,7 +1173,7 @@ function loadTodos() {
       // Bind toggle handlers
       todoList.querySelectorAll('.todo-check').forEach(function (btn) {
         btn.addEventListener('click', function () {
-          toggleTodo(btn.getAttribute('data-date'), parseInt(btn.getAttribute('data-line')));
+          toggleTodo(btn.getAttribute('data-date'), parseInt(btn.getAttribute('data-line')), btn.getAttribute('data-file'));
         });
       });
 
@@ -1191,10 +1191,12 @@ function loadTodos() {
     .catch(function () { todoSection.style.display = 'none'; });
 }
 
-function toggleTodo(date, lineIndex) {
+function toggleTodo(date, lineIndex, filename) {
+  var body = { date: date, lineIndex: lineIndex };
+  if (filename) body.filename = filename;
   api('/todo/toggle', {
     method: 'POST',
-    body: JSON.stringify({ date: date, lineIndex: lineIndex })
+    body: JSON.stringify(body)
   }).then(function (r) {
     if (r.ok) loadToday();
   }).catch(function () { });
