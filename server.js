@@ -6,36 +6,56 @@ const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const rateLimit = require('express-rate-limit');
 
+// Optional AI SDKs (graceful degradation if not installed)
+let GoogleGenerativeAI, GoogleAIFileManager, OpenAI;
+try {
+  ({ GoogleGenerativeAI } = require('@google/generative-ai'));
+  ({ GoogleAIFileManager } = require('@google/generative-ai/server'));
+} catch (e) { console.warn('[Audio] Gemini SDK not installed:', e.message); }
+try {
+  ({ default: OpenAI } = require('openai'));
+} catch (e) { console.warn('[Audio] OpenAI SDK not installed:', e.message); }
+
+// Optional URL processing libs (graceful degradation)
+let Readability, JSDOM, getSubtitles;
+try {
+  ({ Readability } = require('@mozilla/readability'));
+  ({ JSDOM } = require('jsdom'));
+} catch (e) { console.warn('[URL] readability/jsdom not installed:', e.message); }
+try {
+  ({ getSubtitles } = require('youtube-captions-scraper'));
+} catch (e) { console.warn('[URL] youtube-captions-scraper not installed:', e.message); }
+
 const app = express();
 const PORT = process.env.PORT || 3939;
 const VAULT_PATH = process.env.VAULT_PATH;
 const API_KEY = process.env.API_KEY;
 // All VaultVoice files go under 99_vaultvoice/ (staging inbox)
 const VV_BASE = '99_vaultvoice';
-const DAILY_DIR = path.join(VAULT_PATH, VV_BASE, 'daily-notes');
-const ATTACHMENT_DIR_NAME = VV_BASE + '/attachments';
-const ATTACHMENT_DIR = path.join(VAULT_PATH, ATTACHMENT_DIR_NAME);
-
-// File-type specific directories
-const PHOTO_DIR_NAME = VV_BASE + '/photos';
-const SCREENSHOT_DIR_NAME = VV_BASE + '/screenshots';
-const VOICE_DIR_NAME = VV_BASE + '/voice';
-const MEETING_DIR_NAME = VV_BASE + '/meetings';
-const PHOTO_DIR = path.join(VAULT_PATH, PHOTO_DIR_NAME);
-const SCREENSHOT_DIR = path.join(VAULT_PATH, SCREENSHOT_DIR_NAME);
-const VOICE_DIR = path.join(VAULT_PATH, VOICE_DIR_NAME);
-const MEETING_DIR = path.join(VAULT_PATH, MEETING_DIR_NAME);
+// Atomic notes live flat in VV_BASE (no daily-notes subfolder)
+const NOTES_DIR = path.join(VAULT_PATH, VV_BASE);
+// Legacy alias kept for backward-compat references inside this file
+const DAILY_DIR = NOTES_DIR;
+// New asset directories
+const AUDIO_DIR_NAME = VV_BASE + '/assets/audio';
+const IMAGES_DIR_NAME = VV_BASE + '/assets/images';
+const AUDIO_DIR = path.join(VAULT_PATH, AUDIO_DIR_NAME);
+const IMAGES_DIR = path.join(VAULT_PATH, IMAGES_DIR_NAME);
 
 const MEDIA_DIRS = {
-  photo: { name: PHOTO_DIR_NAME, path: PHOTO_DIR },
-  screenshot: { name: SCREENSHOT_DIR_NAME, path: SCREENSHOT_DIR },
-  voice: { name: VOICE_DIR_NAME, path: VOICE_DIR },
-  meeting: { name: MEETING_DIR_NAME, path: MEETING_DIR },
-  default: { name: ATTACHMENT_DIR_NAME, path: ATTACHMENT_DIR }
+  audio: { name: AUDIO_DIR_NAME, path: AUDIO_DIR },
+  image: { name: IMAGES_DIR_NAME, path: IMAGES_DIR },
+  // Legacy upload types — route to new dirs for backward compat
+  photo: { name: IMAGES_DIR_NAME, path: IMAGES_DIR },
+  screenshot: { name: IMAGES_DIR_NAME, path: IMAGES_DIR },
+  voice: { name: AUDIO_DIR_NAME, path: AUDIO_DIR },
+  meeting: { name: AUDIO_DIR_NAME, path: AUDIO_DIR },
+  default: { name: IMAGES_DIR_NAME, path: IMAGES_DIR }
 };
 
-const MAX_UPLOAD_SIZE = parseInt(process.env.MAX_UPLOAD_SIZE || '10') * 1024 * 1024; // MB to bytes
+const MAX_UPLOAD_SIZE = parseInt(process.env.MAX_UPLOAD_SIZE || '100') * 1024 * 1024; // MB to bytes
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const OBSIDIAN_REST_URL = process.env.OBSIDIAN_REST_URL || 'http://localhost:27123';
 const OBSIDIAN_REST_API_KEY = process.env.OBSIDIAN_REST_API_KEY || '';
 
@@ -92,15 +112,18 @@ app.use('/api/upload', uploadLimiter);
 app.use('/api/search', searchLimiter);
 app.use('/api/vm/search', searchLimiter);
 
-// ---- Ensure media directories exist ----
-Object.values(MEDIA_DIRS).forEach(d => {
-  if (!fs.existsSync(d.path)) fs.mkdirSync(d.path, { recursive: true });
+// ---- Ensure directories exist on startup ----
+// Deduplicate paths before creating (legacy types share same dirs as new types)
+const _dirsToCreate = [NOTES_DIR, AUDIO_DIR, IMAGES_DIR];
+_dirsToCreate.forEach(d => {
+  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
 });
 
 // ---- Multer setup for file upload ----
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const type = req.query.type || 'default';
+    // audio/voice/meeting → AUDIO_DIR; image/photo/screenshot/default → IMAGES_DIR
     const dir = MEDIA_DIRS[type] || MEDIA_DIRS.default;
     cb(null, dir.path);
   },
@@ -148,11 +171,11 @@ app.get('/api/test', async (req, res) => {
   // 2. Vault access
   results.vault = { ok: fs.existsSync(VAULT_PATH), path: VAULT_PATH };
 
-  // 3. Daily dir
-  results.dailyDir = { ok: fs.existsSync(DAILY_DIR) };
+  // 3. Notes dir
+  results.dailyDir = { ok: fs.existsSync(NOTES_DIR) };
 
-  // 4. Attachment dir
-  results.attachmentDir = { ok: fs.existsSync(ATTACHMENT_DIR), path: ATTACHMENT_DIR };
+  // 4. Audio/images asset dirs
+  results.attachmentDir = { ok: fs.existsSync(AUDIO_DIR) && fs.existsSync(IMAGES_DIR), path: NOTES_DIR + '/assets' };
 
   // 5. Gemini API
   if (GEMINI_API_KEY && GEMINI_API_KEY !== 'your_key_here') {
@@ -197,8 +220,8 @@ app.get('/api/test', async (req, res) => {
   }
 
   // 7. Recent notes count
-  if (fs.existsSync(DAILY_DIR)) {
-    const files = fs.readdirSync(DAILY_DIR).filter(f => f.endsWith('.md'));
+  if (fs.existsSync(NOTES_DIR)) {
+    const files = fs.readdirSync(NOTES_DIR).filter(f => f.endsWith('.md'));
     results.notes = { ok: true, count: files.length };
   } else {
     results.notes = { ok: false, count: 0 };
@@ -213,11 +236,11 @@ app.get('/api/test', async (req, res) => {
 const serverStartedAt = Date.now();
 app.get('/api/health', (req, res) => {
   const vaultExists = fs.existsSync(VAULT_PATH);
-  const dailyExists = fs.existsSync(DAILY_DIR);
+  const notesExists = fs.existsSync(NOTES_DIR);
   res.json({
     status: 'ok',
     vault: vaultExists,
-    dailyDir: dailyExists,
+    dailyDir: notesExists,
     vaultPath: VAULT_PATH,
     platform: process.platform,
     uptime: Math.floor(process.uptime()),
@@ -284,8 +307,12 @@ app.post('/api/daily/:date', (req, res) => {
     return res.status(400).json({ error: 'Content is required' });
   }
 
+  // Map legacy section names to new type values
+  const isTodo = section === '오늘할일';
+  const noteType = isTodo ? 'todo' : 'memo';
+
   let newEntry;
-  if (section === '오늘할일') {
+  if (isTodo) {
     let meta = '';
     if (priority) meta += ` [priority::${priority}]`;
     if (due) meta += ` [due::${due}]`;
@@ -299,7 +326,7 @@ app.post('/api/daily/:date', (req, res) => {
   if (images && images.length > 0) {
     for (const img of images) {
       const filename = typeof img === 'string' ? img : img.filename;
-      const dir = typeof img === 'string' ? ATTACHMENT_DIR_NAME : (img.dirName || ATTACHMENT_DIR_NAME);
+      const dir = typeof img === 'string' ? IMAGES_DIR_NAME : (img.dirName || IMAGES_DIR_NAME);
       newEntry += `\n  - ![[${dir}/${filename}]]`;
     }
   }
@@ -308,12 +335,12 @@ app.post('/api/daily/:date', (req, res) => {
   if (audios && audios.length > 0) {
     for (const aud of audios) {
       const filename = typeof aud === 'string' ? aud : aud.filename;
-      const dir = typeof aud === 'string' ? ATTACHMENT_DIR_NAME : (aud.dirName || ATTACHMENT_DIR_NAME);
+      const dir = typeof aud === 'string' ? AUDIO_DIR_NAME : (aud.dirName || AUDIO_DIR_NAME);
       newEntry += `\n  - 🎙️ ![[${dir}/${filename}]]`;
     }
   }
 
-  const result = createAtomicNote(date, section, newEntry, tags);
+  const result = createAtomicNote(date, noteType, newEntry, tags);
   res.json({ success: true, date, section, ...result });
 });
 
@@ -949,14 +976,14 @@ function executeReadDailyNote(dateStr) {
 function executeAddTodo(args) {
   const date = resolveDate(args.date);
   const entry = `- [ ] ${args.task} [priority::${args.priority || '보통'}]`;
-  createAtomicNote(date, '오늘할일', entry, []);
+  createAtomicNote(date, 'todo', entry, ['todo']);
   return { result: `"${args.task}" 할일을 ${date}에 추가했습니다.` };
 }
 
 function executeAddMemo(args) {
   const date = resolveDate(args.date);
   const entry = `- ${args.content.trim()}`;
-  createAtomicNote(date, '메모', entry, []);
+  createAtomicNote(date, 'memo', entry, []);
   return { result: `메모를 ${date}에 추가했습니다: "${args.content}"` };
 }
 
@@ -1760,11 +1787,11 @@ app.get('/api/search', (req, res) => {
   if (scope === 'all') {
     allFiles = getAllMdFilesCached();
   } else {
-    // Daily notes only
-    if (!fs.existsSync(DAILY_DIR)) return res.json({ results: [], query: q, total: 0 });
-    allFiles = fs.readdirSync(DAILY_DIR)
+    // VaultVoice notes only (NOTES_DIR)
+    if (!fs.existsSync(NOTES_DIR)) return res.json({ results: [], query: q, total: 0 });
+    allFiles = fs.readdirSync(NOTES_DIR)
       .filter(f => f.endsWith('.md'))
-      .map(f => path.join(DAILY_DIR, f));
+      .map(f => path.join(NOTES_DIR, f));
   }
   const results = [];
   const MAX_RESULTS = 50;
@@ -1807,7 +1834,7 @@ app.get('/api/search/ai', async (req, res) => {
     return res.status(503).json({ error: 'Gemini API key not configured' });
   }
 
-  if (!fs.existsSync(DAILY_DIR)) {
+  if (!fs.existsSync(NOTES_DIR)) {
     return res.json({ results: [], query: q });
   }
 
@@ -1844,10 +1871,10 @@ app.get('/api/search/ai', async (req, res) => {
     if (scope === 'all') {
       allFiles = getAllMdFilesCached();
     } else {
-      if (!fs.existsSync(DAILY_DIR)) return res.json({ results: [], query: q, keywords, total: 0 });
-      allFiles = fs.readdirSync(DAILY_DIR)
+      if (!fs.existsSync(NOTES_DIR)) return res.json({ results: [], query: q, keywords, total: 0 });
+      allFiles = fs.readdirSync(NOTES_DIR)
         .filter(f => f.endsWith('.md'))
-        .map(f => path.join(DAILY_DIR, f));
+        .map(f => path.join(NOTES_DIR, f));
     }
     const results = [];
     const MAX_RESULTS = 50;
@@ -1896,14 +1923,14 @@ app.get('/api/search/ai', async (req, res) => {
 app.get('/api/tags', (req, res) => {
   const tagCount = {};
 
-  if (!fs.existsSync(DAILY_DIR)) {
+  if (!fs.existsSync(NOTES_DIR)) {
     return res.json({ tags: [] });
   }
 
-  const files = fs.readdirSync(DAILY_DIR).filter(f => f.endsWith('.md')).sort().reverse().slice(0, 100);
+  const files = fs.readdirSync(NOTES_DIR).filter(f => f.endsWith('.md')).sort().reverse().slice(0, 100);
 
   for (const file of files) {
-    const raw = fs.readFileSync(path.join(DAILY_DIR, file), 'utf-8');
+    const raw = fs.readFileSync(path.join(NOTES_DIR, file), 'utf-8');
     const { frontmatter } = parseFrontmatter(raw);
     if (frontmatter.tags && Array.isArray(frontmatter.tags)) {
       for (const tag of frontmatter.tags) {
@@ -1923,11 +1950,11 @@ app.get('/api/tags', (req, res) => {
 // Recent notes (last 7 days)
 // ============================================================
 app.get('/api/notes/recent', (req, res) => {
-  if (!fs.existsSync(DAILY_DIR)) {
+  if (!fs.existsSync(NOTES_DIR)) {
     return res.json({ notes: [] });
   }
 
-  const files = fs.readdirSync(DAILY_DIR).filter(f => f.endsWith('.md'));
+  const files = fs.readdirSync(NOTES_DIR).filter(f => f.endsWith('.md'));
   // Extract unique dates and sort descending
   const dateMap = {};
   for (const f of files) {
@@ -1946,7 +1973,7 @@ app.get('/api/notes/recent', (req, res) => {
       const allTags = new Set();
       const previews = [];
       for (const file of dateFiles.sort()) {
-        const raw = fs.readFileSync(path.join(DAILY_DIR, file), 'utf-8');
+        const raw = fs.readFileSync(path.join(NOTES_DIR, file), 'utf-8');
         const { frontmatter, body } = parseFrontmatter(raw);
         (frontmatter.tags || []).forEach(t => allTags.add(t));
         const lines = body.split('\n').filter(l => l.trim());
@@ -2013,21 +2040,31 @@ function getDayName(dateStr) {
 }
 
 // Create an atomic note file (one entry = one file)
-function createAtomicNote(date, section, entry, tags) {
-  if (!fs.existsSync(DAILY_DIR)) {
-    fs.mkdirSync(DAILY_DIR, { recursive: true });
+// type: voice|image|url|memo|todo (replaces old 'section' param)
+// extraFrontmatter: additional key-value pairs to merge into frontmatter
+function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
+  if (!fs.existsSync(NOTES_DIR)) {
+    fs.mkdirSync(NOTES_DIR, { recursive: true });
   }
 
   const now = new Date();
   const timeStr = now.toTimeString().slice(0, 8).replace(/:/g, '');
   const timeDisplay = now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
-  const filename = `${date}_${timeStr}_${section}.md`;
-  const filePath = path.join(DAILY_DIR, filename);
+  const filename = `${date}_${timeStr}_${type}.md`;
+  const filePath = path.join(NOTES_DIR, filename);
 
-  const allTags = ['daily', ...tags.filter(t => t !== 'daily')];
+  const allTags = ['vaultvoice', ...tags.filter(t => t !== 'vaultvoice')];
   const unique = [...new Set(allTags)];
 
-  const fm = { '날짜': date, '시간': `"${timeDisplay}"`, '섹션': section, tags: unique };
+  const fm = {
+    '날짜': date,
+    '시간': `"${timeDisplay}"`,
+    '유형': type,
+    status: 'captured',
+    tags: unique,
+    summary: '""',
+    ...extraFrontmatter
+  };
   const body = `\n${entry}\n`;
 
   const content = serializeFrontmatter(fm) + body;
@@ -2038,34 +2075,35 @@ function createAtomicNote(date, section, entry, tags) {
 
 // Read all atomic notes for a given date, returns sorted array
 function getNotesForDate(date) {
-  if (!fs.existsSync(DAILY_DIR)) return [];
+  if (!fs.existsSync(NOTES_DIR)) return [];
 
   const prefix = `${date}_`;
-  const files = fs.readdirSync(DAILY_DIR)
+  const files = fs.readdirSync(NOTES_DIR)
     .filter(f => f.startsWith(prefix) && f.endsWith('.md'))
     .sort();
 
   return files.map(f => {
-    const raw = fs.readFileSync(path.join(DAILY_DIR, f), 'utf-8');
+    const raw = fs.readFileSync(path.join(NOTES_DIR, f), 'utf-8');
     const { frontmatter, body } = parseFrontmatter(raw);
     return { filename: f, frontmatter, body: body.trim(), raw };
   });
 }
 
-// Combine notes into a single body grouped by section (for display)
+// Combine notes into a single body grouped by 유형 (type) for display
 function combineNotes(notes) {
-  const sections = {};
+  const groups = {};
   for (const note of notes) {
-    const sec = note.frontmatter['섹션'] || '메모';
-    if (!sections[sec]) sections[sec] = [];
-    sections[sec].push(note.body);
+    // Support both new '유형' field and legacy '섹션' field
+    const type = note.frontmatter['유형'] || note.frontmatter['섹션'] || 'memo';
+    if (!groups[type]) groups[type] = [];
+    groups[type].push(note.body);
   }
 
   let combined = '';
-  const order = ['메모', '오늘할일', '오늘 회고'];
-  const keys = [...new Set([...order.filter(k => sections[k]), ...Object.keys(sections)])];
-  for (const sec of keys) {
-    combined += `## ${sec}\n\n${sections[sec].join('\n')}\n\n`;
+  const order = ['memo', 'todo', 'voice', 'image', 'url'];
+  const keys = [...new Set([...order.filter(k => groups[k]), ...Object.keys(groups)])];
+  for (const type of keys) {
+    combined += `## ${type}\n\n${groups[type].join('\n')}\n\n`;
   }
   return combined.trim();
 }
@@ -2361,6 +2399,607 @@ app.put('/api/vm/tags', async (req, res) => {
 });
 
 // ============================================================
+// Process pipelines (stubs — to be implemented by other coders)
+// ============================================================
+
+// ============================================================
+// Audio Processing Pipeline — Gemini transcription + Whisper fallback
+// ============================================================
+
+// Parse "MM:SS" or "HH:MM:SS" timestamp string to seconds
+function parseTimestamp(ts) {
+  if (!ts) return 0;
+  const parts = String(ts).split(':').map(Number);
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return Number(ts) || 0;
+}
+
+// Format seconds to "Xm Ys" display string
+function formatDuration(seconds) {
+  if (!seconds || isNaN(seconds)) return '알 수 없음';
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  if (m === 0) return `${s}초`;
+  return `${m}분 ${s}초`;
+}
+
+// Decide whether Whisper fallback is needed based on quality indicators
+function needsWhisperFallback(qualityCheck, audioSeconds, textLength) {
+  let failCount = 0;
+  if (qualityCheck.broken_sentences && qualityCheck.broken_sentences.length >= 3) failCount++;
+  if (qualityCheck.unclear_ratio >= 0.2) failCount++;
+  if (qualityCheck.repetition_detected) failCount++;
+  if (qualityCheck.insufficient_content) failCount++;
+  // Code-based check: less than 50 chars per minute
+  const charsPerMin = audioSeconds > 0 ? (textLength / audioSeconds) * 60 : 0;
+  if (charsPerMin < 50 && audioSeconds > 30) failCount++; // only penalise if clip is long enough
+  return failCount >= 2;
+}
+
+// Temporal Overlap merge: assign Gemini speaker labels to Whisper segments
+function mergeTranscripts(whisperSegments, geminiTranscript) {
+  return whisperSegments.map(seg => {
+    let bestSpeaker = 'Unknown';
+    let maxOverlap = 0;
+    for (const g of geminiTranscript) {
+      const gStart = parseTimestamp(g.timestamp);
+      // Assume each Gemini segment spans ~30 seconds for overlap calculation
+      const overlap = Math.max(0, Math.min(seg.end, gStart + 30) - Math.max(seg.start, gStart));
+      if (overlap > maxOverlap) {
+        maxOverlap = overlap;
+        bestSpeaker = g.speaker;
+      }
+    }
+    return { speaker: bestSpeaker, text: seg.text, start: seg.start, end: seg.end };
+  });
+}
+
+app.post('/api/process/audio', auth, uploadLimiter, upload.single('file'), async (req, res) => {
+  // Guard: Gemini SDK required
+  if (!GoogleGenerativeAI || !GoogleAIFileManager) {
+    return res.status(503).json({ error: 'Gemini SDK not installed. Run: npm install @google/generative-ai' });
+  }
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_key_here') {
+    return res.status(503).json({ error: 'GEMINI_API_KEY not configured' });
+  }
+
+  const file = req.file;
+  if (!file) {
+    return res.status(400).json({ error: 'No audio file provided' });
+  }
+
+  const date = req.body.date || new Date().toISOString().split('T')[0];
+  const audioFilename = file.filename;
+  const audioFilePath = file.path;
+  const audioSizeBytes = file.size;
+
+  let geminiFile = null;
+  const fileManager = new GoogleAIFileManager(GEMINI_API_KEY);
+
+  try {
+    // ── Step 1: Upload audio to Gemini Files API ──────────────────────────
+    console.log('[Audio] Uploading to Gemini Files API:', audioFilename, audioSizeBytes, 'bytes');
+    geminiFile = await fileManager.uploadFile(audioFilePath, {
+      mimeType: file.mimetype || 'audio/mpeg',
+      displayName: audioFilename
+    });
+    const fileUri = geminiFile.file.uri;
+    console.log('[Audio] Gemini file URI:', fileUri);
+
+    // ── Step 2: Gemini transcription with structured output ───────────────
+    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+    let model;
+    try {
+      model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    } catch (e) {
+      model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    }
+
+    const transcriptionSchema = {
+      type: 'object',
+      properties: {
+        summary: { type: 'string' },
+        participants: { type: 'array', items: { type: 'string' } },
+        transcript: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              timestamp: { type: 'string' },
+              speaker: { type: 'string' },
+              text: { type: 'string' }
+            },
+            required: ['timestamp', 'speaker', 'text']
+          }
+        },
+        quality_check: {
+          type: 'object',
+          properties: {
+            broken_sentences: { type: 'array', items: { type: 'string' } },
+            unclear_ratio: { type: 'number' },
+            repetition_detected: { type: 'boolean' },
+            insufficient_content: { type: 'boolean' }
+          },
+          required: ['broken_sentences', 'unclear_ratio', 'repetition_detected', 'insufficient_content']
+        }
+      },
+      required: ['summary', 'participants', 'transcript', 'quality_check']
+    };
+
+    const prompt = `이 오디오 파일을 한국어로 전사해주세요.
+
+다음 정보를 JSON으로 반환하세요:
+1. summary: 대화/발화의 핵심 내용을 2~3문장으로 요약
+2. participants: 화자 목록 (예: ["화자1", "화자2"] 또는 단독 발화면 ["화자1"])
+3. transcript: 타임스탬프(MM:SS), 화자, 발화 내용을 순서대로 기록
+4. quality_check: 품질 평가
+   - broken_sentences: 불완전하게 잘린 문장 목록 (최대 10개)
+   - unclear_ratio: 불명확한 발화 비율 (0.0~1.0)
+   - repetition_detected: 동일 내용 반복 여부
+   - insufficient_content: 의미있는 내용이 너무 적은지 여부
+
+화자가 여럿이면 목소리/톤/내용으로 구분하여 "화자1", "화자2" 등으로 표기하세요.`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 300000); // 5 min
+    let geminiResult = null;
+    let geminiError = null;
+
+    try {
+      const result = await model.generateContent({
+        contents: [{
+          role: 'user',
+          parts: [
+            { text: prompt },
+            { fileData: { mimeType: file.mimetype || 'audio/mpeg', fileUri } }
+          ]
+        }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: transcriptionSchema,
+          temperature: 0.1
+        }
+      });
+      const rawText = result.response.text();
+      geminiResult = JSON.parse(rawText);
+      console.log('[Audio] Gemini transcription OK, segments:', geminiResult.transcript?.length);
+    } catch (e) {
+      geminiError = e;
+      console.error('[Audio] Gemini transcription failed:', e.message);
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    // ── Step 3: Quality check → decide Whisper fallback ──────────────────
+    let usedWhisper = false;
+    let finalTranscript = [];
+    let summary = '';
+    let participants = [];
+    let suggestedTags = ['voice'];
+
+    // Estimate audio duration from file size heuristic if not available (~128kbps mp3)
+    const audioSeconds = Math.round((audioSizeBytes / 1024) / 16); // rough: 16KB/s at 128kbps
+
+    if (geminiResult) {
+      summary = geminiResult.summary || '';
+      participants = geminiResult.participants || [];
+      const geminiTranscript = geminiResult.transcript || [];
+      const qc = geminiResult.quality_check || {};
+      const totalText = geminiTranscript.map(s => s.text).join('');
+
+      const useWhisper = needsWhisperFallback(qc, audioSeconds, totalText.length);
+      console.log('[Audio] Quality check — needsWhisper:', useWhisper, 'qc:', JSON.stringify(qc));
+
+      if (useWhisper && OPENAI_API_KEY && OpenAI && audioSizeBytes <= 25 * 1024 * 1024) {
+        // ── Whisper fallback ──────────────────────────────────────────────
+        try {
+          console.log('[Audio] Calling Whisper API for fallback...');
+          const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+          const whisperRes = await openai.audio.transcriptions.create({
+            file: fs.createReadStream(audioFilePath),
+            model: 'whisper-1',
+            response_format: 'verbose_json',
+            language: 'ko'
+          });
+          const whisperSegments = whisperRes.segments || [];
+          if (whisperSegments.length > 0) {
+            finalTranscript = mergeTranscripts(whisperSegments, geminiTranscript);
+            usedWhisper = true;
+            console.log('[Audio] Whisper merge OK, segments:', finalTranscript.length);
+          } else {
+            // Whisper returned no segments — fall back to Gemini
+            finalTranscript = geminiTranscript.map(s => ({
+              speaker: s.speaker,
+              text: s.text,
+              start: parseTimestamp(s.timestamp),
+              end: parseTimestamp(s.timestamp) + 30
+            }));
+          }
+        } catch (whisperErr) {
+          console.error('[Audio] Whisper fallback failed:', whisperErr.message);
+          // Use Gemini result anyway
+          finalTranscript = geminiTranscript.map(s => ({
+            speaker: s.speaker,
+            text: s.text,
+            start: parseTimestamp(s.timestamp),
+            end: parseTimestamp(s.timestamp) + 30
+          }));
+        }
+      } else {
+        // Use Gemini result directly
+        finalTranscript = geminiTranscript.map(s => ({
+          speaker: s.speaker,
+          text: s.text,
+          start: parseTimestamp(s.timestamp),
+          end: parseTimestamp(s.timestamp) + 30
+        }));
+        if (useWhisper && audioSizeBytes > 25 * 1024 * 1024) {
+          console.log('[Audio] Skipping Whisper — file > 25MB');
+        }
+      }
+
+      // Generate tags from participants count
+      if (participants.length > 1) suggestedTags.push('회의');
+    } else {
+      // Gemini failed entirely — try Whisper directly if available
+      if (OPENAI_API_KEY && OpenAI && audioSizeBytes <= 25 * 1024 * 1024) {
+        try {
+          console.log('[Audio] Gemini failed, trying Whisper directly...');
+          const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+          const whisperRes = await openai.audio.transcriptions.create({
+            file: fs.createReadStream(audioFilePath),
+            model: 'whisper-1',
+            response_format: 'verbose_json',
+            language: 'ko'
+          });
+          const whisperSegments = whisperRes.segments || [];
+          finalTranscript = whisperSegments.map(seg => ({
+            speaker: '화자1',
+            text: seg.text,
+            start: seg.start,
+            end: seg.end
+          }));
+          summary = whisperRes.text ? whisperRes.text.slice(0, 200) : '음성 전사 완료';
+          participants = ['화자1'];
+          usedWhisper = true;
+          console.log('[Audio] Whisper direct transcription OK, segments:', finalTranscript.length);
+        } catch (whisperErr) {
+          console.error('[Audio] Whisper direct transcription failed:', whisperErr.message);
+          // Both failed — save error note
+          const errBody = `## 전사 오류\n\nGemini: ${geminiError?.message || '알 수 없는 오류'}\nWhisper: ${whisperErr.message}`;
+          const result = createAtomicNote(date, 'voice', errBody, ['voice', 'error'], {
+            전사방식: 'error',
+            source: `[[assets/audio/${audioFilename}]]`
+          });
+          return res.status(500).json({
+            ok: false,
+            error: '음성 전사 실패',
+            geminiError: geminiError?.message,
+            whisperError: whisperErr.message,
+            filename: result.filename
+          });
+        }
+      } else {
+        // No fallback available
+        const errBody = `## 전사 오류\n\n${geminiError?.message || '알 수 없는 오류'}`;
+        const result = createAtomicNote(date, 'voice', errBody, ['voice', 'error'], {
+          전사방식: 'error',
+          source: `[[assets/audio/${audioFilename}]]`
+        });
+        return res.status(500).json({
+          ok: false,
+          error: '음성 전사 실패: ' + (geminiError?.message || '알 수 없는 오류'),
+          filename: result.filename
+        });
+      }
+    }
+
+    // ── Step 4: Build note body and save atomic note ──────────────────────
+    const transcriptText = finalTranscript
+      .map(s => `**${s.speaker}**: ${s.text}`)
+      .join('\n\n');
+    const body = `## 요약\n\n${summary}\n\n## 전사\n\n${transcriptText}`;
+
+    const extraFrontmatter = {
+      전사방식: usedWhisper ? 'gemini+whisper' : 'gemini',
+      화자수: participants.length || 'unknown',
+      녹음시간: formatDuration(audioSeconds),
+      speakers: participants,
+      source: `[[assets/audio/${audioFilename}]]`
+    };
+
+    const noteResult = createAtomicNote(date, 'voice', body, [...suggestedTags, 'voice'], extraFrontmatter);
+    console.log('[Audio] Atomic note created:', noteResult.filename);
+
+    res.json({
+      ok: true,
+      filename: noteResult.filename,
+      transcription: usedWhisper ? 'gemini+whisper' : 'gemini',
+      summary,
+      speakers: participants
+    });
+
+  } catch (e) {
+    console.error('[Audio] Unexpected error:', e);
+    res.status(500).json({ ok: false, error: e.message });
+  } finally {
+    // Clean up Gemini file after processing
+    if (geminiFile) {
+      try {
+        await fileManager.deleteFile(geminiFile.file.name);
+        console.log('[Audio] Gemini file cleaned up:', geminiFile.file.name);
+      } catch (cleanupErr) {
+        console.warn('[Audio] Failed to delete Gemini file:', cleanupErr.message);
+      }
+    }
+  }
+});
+
+app.post('/api/process/image', auth, aiLimiter, uploadLimiter, upload.single('file'), async (req, res) => {
+  if (!GoogleGenerativeAI) return res.status(503).json({ error: 'Gemini SDK not installed' });
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_key_here') return res.status(503).json({ error: 'GEMINI_API_KEY not configured' });
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: 'No image file provided' });
+
+  const date = req.body.date || new Date().toISOString().split('T')[0];
+  const imageFilename = file.filename;
+
+  try {
+    const imageData = fs.readFileSync(file.path);
+    const base64 = imageData.toString('base64');
+    const mimeType = file.mimetype || 'image/jpeg';
+
+    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+    let model;
+    try { model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' }); }
+    catch (e) { model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' }); }
+
+    const imageSchema = {
+      type: 'object',
+      properties: {
+        image_type: { type: 'string', enum: ['명함', '영수증', '화이트보드', '손글씨', '도표', '사진', '스크린샷'] },
+        ocr_text: { type: 'string' },
+        structured_data: { type: 'object' },
+        summary: { type: 'string' },
+        suggested_tags: { type: 'array', items: { type: 'string' } }
+      },
+      required: ['image_type', 'ocr_text', 'summary', 'suggested_tags']
+    };
+
+    const prompt = `이 이미지를 분석해주세요.
+
+다음 정보를 JSON으로 반환하세요:
+1. image_type: 이미지 유형 (명함, 영수증, 화이트보드, 손글씨, 도표, 사진, 스크린샷 중 하나)
+2. ocr_text: 이미지에서 추출한 모든 텍스트 (없으면 빈 문자열)
+3. structured_data: 유형별 구조화 데이터
+   - 명함: { name, company, phone, email, position }
+   - 영수증: { date, total, items: [{name, price}], store }
+   - 화이트보드/손글씨: { lines: ["정리된 텍스트 줄"] }
+   - 도표/차트: { description, data_points: [{label, value}] }
+   - 사진: { scene, objects: ["주요 객체"], context }
+   - 스크린샷: { app_or_site, ui_elements: ["설명"], extracted_text }
+4. summary: 이미지에 대한 한줄 설명
+5. suggested_tags: 관련 태그 2~3개 (한국어)`;
+
+    const result = await model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: prompt }, { inlineData: { mimeType, data: base64 } }] }],
+      generationConfig: { responseMimeType: 'application/json', responseSchema: imageSchema, temperature: 0.1 }
+    });
+
+    const analysis = JSON.parse(result.response.text());
+    const body = buildImageNoteBody(analysis, imageFilename);
+    const tags = ['image', ...(analysis.suggested_tags || [])];
+    const extraFrontmatter = {
+      이미지유형: analysis.image_type,
+      source: `[[assets/images/${imageFilename}]]`,
+      status: 'transcribed'
+    };
+
+    const noteResult = createAtomicNote(date, 'image', body, tags, extraFrontmatter);
+    console.log('[Image] Atomic note created:', noteResult.filename);
+    res.json({ ok: true, filename: noteResult.filename, image_type: analysis.image_type, summary: analysis.summary, tags: analysis.suggested_tags });
+  } catch (e) {
+    console.error('[Image] Processing error:', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+function buildImageNoteBody(analysis, imageFilename) {
+  let body = `## 요약\n\n${analysis.summary}\n\n`;
+  if (analysis.ocr_text) body += `## 추출 텍스트\n\n${analysis.ocr_text}\n\n`;
+  const sd = analysis.structured_data || {};
+  body += buildStructuredSection(analysis.image_type, sd);
+  body += `\n## 원본\n\n![[${IMAGES_DIR_NAME}/${imageFilename}]]`;
+  return body;
+}
+
+function buildStructuredSection(imageType, sd) {
+  if (imageType === '명함' && sd.name) {
+    let s = '## 명함 정보\n\n';
+    if (sd.name) s += `- **이름**: ${sd.name}\n`;
+    if (sd.company) s += `- **회사**: ${sd.company}\n`;
+    if (sd.position) s += `- **직책**: ${sd.position}\n`;
+    if (sd.phone) s += `- **전화**: ${sd.phone}\n`;
+    if (sd.email) s += `- **이메일**: ${sd.email}\n`;
+    return s;
+  }
+  if (imageType === '영수증' && sd.store) {
+    let s = '## 영수증 정보\n\n';
+    if (sd.store) s += `- **매장**: ${sd.store}\n`;
+    if (sd.date) s += `- **날짜**: ${sd.date}\n`;
+    if (sd.total) s += `- **합계**: ${sd.total}\n`;
+    if (sd.items && sd.items.length) {
+      s += '\n| 항목 | 금액 |\n|------|------|\n';
+      for (const item of sd.items) s += `| ${item.name || ''} | ${item.price || ''} |\n`;
+    }
+    return s;
+  }
+  if ((imageType === '화이트보드' || imageType === '손글씨') && sd.lines) {
+    return '## 정리된 내용\n\n' + sd.lines.map(l => `- ${l}`).join('\n') + '\n';
+  }
+  if (imageType === '도표' && sd.description) {
+    let s = `## 도표 분석\n\n${sd.description}\n`;
+    if (sd.data_points && sd.data_points.length) {
+      s += '\n| 항목 | 값 |\n|------|----|\n';
+      for (const dp of sd.data_points) s += `| ${dp.label || ''} | ${dp.value || ''} |\n`;
+    }
+    return s;
+  }
+  if (imageType === '스크린샷' && sd.app_or_site) {
+    let s = `## 스크린샷 분석\n\n- **앱/사이트**: ${sd.app_or_site}\n`;
+    if (sd.extracted_text) s += `- **텍스트**: ${sd.extracted_text}\n`;
+    return s;
+  }
+  if (sd.scene) {
+    let s = `## 장면 설명\n\n${sd.scene}\n`;
+    if (sd.objects && sd.objects.length) s += `- **주요 객체**: ${sd.objects.join(', ')}\n`;
+    return s;
+  }
+  return '';
+}
+
+app.post('/api/process/url', auth, aiLimiter, async (req, res) => {
+  if (!GoogleGenerativeAI) return res.status(503).json({ error: 'Gemini SDK not installed' });
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_key_here') return res.status(503).json({ error: 'GEMINI_API_KEY not configured' });
+
+  const { url, date, tags: extraTags = [] } = req.body;
+  if (!url) return res.status(400).json({ error: 'url required' });
+  const noteDate = date || new Date().toISOString().split('T')[0];
+
+  try {
+    const { text, meta } = await extractUrlContent(url);
+    const summary = await summarizeWithGemini(text, url, meta);
+    const domain = new URL(url).hostname.replace(/^www\./, '');
+    const tags = ['url', domain, ...(summary.keywords || []), ...extraTags];
+    const body = buildUrlNoteBody(summary, meta, url);
+    const extraFrontmatter = {
+      url,
+      domain,
+      og_title: meta.title || '',
+      og_image: meta.image || '',
+      status: 'summarized'
+    };
+
+    const noteResult = createAtomicNote(noteDate, 'url', body, tags, extraFrontmatter);
+    console.log('[URL] Atomic note created:', noteResult.filename);
+    res.json({ ok: true, filename: noteResult.filename, title: summary.title, summary: summary.summary });
+  } catch (e) {
+    console.error('[URL] Processing error:', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+async function extractUrlContent(url) {
+  const ytMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  if (ytMatch) return extractYouTubeContent(url, ytMatch[1]);
+  return extractWebContent(url);
+}
+
+async function extractYouTubeContent(url, videoId) {
+  let captionText = '';
+  if (getSubtitles) {
+    try {
+      const captions = await getSubtitles({ videoID: videoId, lang: 'ko' })
+        .catch(() => getSubtitles({ videoID: videoId, lang: 'en' }));
+      captionText = captions.map(c => c.text).join(' ').slice(0, 10000);
+    } catch (e) { console.warn('[URL] Caption fetch failed:', e.message); }
+  }
+  const html = await fetchHtml(url);
+  const meta = extractOgMeta(html);
+  return { text: captionText || meta.title || url, meta };
+}
+
+async function extractWebContent(url) {
+  const html = await fetchHtml(url);
+  const meta = extractOgMeta(html);
+  let text = '';
+  if (Readability && JSDOM) {
+    try {
+      const dom = new JSDOM(html, { url });
+      const article = new Readability(dom.window.document).parse();
+      text = article ? article.textContent.slice(0, 10000) : '';
+    } catch (e) { console.warn('[URL] Readability failed:', e.message); }
+  }
+  if (!text) text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 10000);
+  return { text, meta };
+}
+
+async function fetchHtml(url) {
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; VaultVoice/1.0)' }, signal: AbortSignal.timeout(10000) });
+  if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`);
+  return res.text();
+}
+
+function extractOgMeta(html) {
+  const get = (prop) => { const m = html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${prop}["'][^>]+content=["']([^"']+)["']`, 'i')) || html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${prop}["']`, 'i')); return m ? m[1] : ''; };
+  const title = get('og:title') || get('twitter:title') || (html.match(/<title>([^<]+)<\/title>/i) || [])[1] || '';
+  return { title: title.trim(), description: get('og:description').trim(), image: get('og:image').trim() };
+}
+
+async function summarizeWithGemini(text, url, meta) {
+  const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+  let model;
+  try { model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' }); }
+  catch (e) { model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' }); }
+
+  const urlSchema = {
+    type: 'object',
+    properties: {
+      title: { type: 'string' },
+      summary: { type: 'string' },
+      keywords: { type: 'array', items: { type: 'string' } }
+    },
+    required: ['title', 'summary', 'keywords']
+  };
+  const prompt = `다음 웹페이지 내용을 한국어로 요약해주세요.\nURL: ${url}\n제목: ${meta.title || '(없음)'}\n\n내용:\n${text}\n\n반환:\n- title: 한국어 제목\n- summary: 핵심 내용 3줄 요약\n- keywords: 핵심 키워드 3개 (한국어)`;
+  const result = await model.generateContent({
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: { responseMimeType: 'application/json', responseSchema: urlSchema, temperature: 0.2 }
+  });
+  return JSON.parse(result.response.text());
+}
+
+function buildUrlNoteBody(summary, meta, url) {
+  let body = `## 요약\n\n${summary.summary}\n\n`;
+  if (meta.description) body += `> ${meta.description}\n\n`;
+  if (summary.keywords && summary.keywords.length) body += `**키워드**: ${summary.keywords.join(', ')}\n\n`;
+  body += `## 출처\n\n- **URL**: ${url}\n`;
+  if (meta.title) body += `- **원제**: ${meta.title}\n`;
+  if (meta.image) body += `- **썸네일**: ![thumbnail](${meta.image})\n`;
+  return body;
+}
+
+// Feed endpoint: returns individual notes with metadata for a date
+app.get('/api/feed/:date', auth, (req, res) => {
+  const { date } = req.params;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD' });
+  }
+  const notes = getNotesForDate(date);
+  res.json({ date, notes });
+});
+
+// Process text: simple text memo (replaces POST /api/daily/:date for plain memos)
+app.post('/api/process/text', auth, (req, res) => {
+  const { content, tags = [], date } = req.body;
+  if (!content) return res.status(400).json({ error: 'content required' });
+  const noteDate = date || new Date().toISOString().split('T')[0];
+  const result = createAtomicNote(noteDate, 'memo', content, tags);
+  res.json({ ok: true, ...result });
+});
+
+// Todo endpoint: create a todo atomic note
+app.post('/api/todo', auth, (req, res) => {
+  const { text, date } = req.body;
+  if (!text) return res.status(400).json({ error: 'text required' });
+  const noteDate = date || new Date().toISOString().split('T')[0];
+  const entry = `- [ ] ${text}`;
+  const result = createAtomicNote(noteDate, 'todo', entry, ['todo']);
+  res.json({ ok: true, ...result });
+});
+
+// ============================================================
 // SPA fallback
 // ============================================================
 app.get('*', (req, res) => {
@@ -2377,7 +3016,8 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`  API Key: ${API_KEY}`);
   console.log(`  Gemini:  ${GEMINI_API_KEY && GEMINI_API_KEY !== 'your_key_here' ? 'configured' : 'not configured'}`);
   console.log(`  Obsidian API: ${OBSIDIAN_REST_API_KEY ? OBSIDIAN_REST_URL : 'not configured'}`);
-  console.log(`  Uploads: ${ATTACHMENT_DIR}\n`);
+  console.log(`  Audio:   ${AUDIO_DIR}`);
+  console.log(`  Images:  ${IMAGES_DIR}\n`);
 
   // Check Obsidian REST API connectivity
   if (OBSIDIAN_REST_API_KEY) {

@@ -92,7 +92,7 @@ test.describe('Calendar Event Detection UI', () => {
 
   test('calendar auto-detect toggle exists in settings', async ({ page }) => {
     await authenticate(page);
-    await page.click('[data-tab="set"]');
+    await page.click('[data-tab="settings"]');
     const toggle = page.locator('#cal-auto-detect');
     await expect(toggle).toBeAttached();
     // Default is checked
@@ -101,11 +101,12 @@ test.describe('Calendar Event Detection UI', () => {
 
   test('calendar auto-detect toggle persists setting', async ({ page }) => {
     await authenticate(page);
-    await page.click('[data-tab="set"]');
+    await page.click('[data-tab="settings"]');
     const toggle = page.locator('#cal-auto-detect');
 
-    // Uncheck
-    await toggle.uncheck();
+    // Uncheck via JS (checkbox hidden inside custom toggle, outside viewport)
+    await toggle.scrollIntoViewIfNeeded();
+    await toggle.evaluate(el => { el.checked = false; el.dispatchEvent(new Event('change')); });
     await expect(toggle).not.toBeChecked();
 
     // Verify localStorage
@@ -113,7 +114,7 @@ test.describe('Calendar Event Detection UI', () => {
     expect(stored).toBe('off');
 
     // Re-check
-    await toggle.check();
+    await toggle.evaluate(el => { el.checked = true; el.dispatchEvent(new Event('change')); });
     const stored2 = await page.evaluate(() => localStorage.getItem('vv_calAutoDetect'));
     expect(stored2).toBe('on');
   });

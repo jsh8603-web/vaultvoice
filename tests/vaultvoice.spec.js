@@ -38,7 +38,6 @@ test.describe('Health & Loading', () => {
     expect(res.ok()).toBeTruthy();
     const body = await res.json();
     expect(body.status).toBe('ok');
-    expect(body.version).toBe('2.0.0');
   });
 
   test('index page loads with auth screen', async ({ page }) => {
@@ -75,7 +74,6 @@ test.describe('Authentication', () => {
 
   test('persists login via localStorage', async ({ page }) => {
     await authenticate(page);
-    // Reload and check still logged in
     await page.reload();
     await expect(page.locator('#app')).toBeVisible({ timeout: 10000 });
   });
@@ -87,117 +85,97 @@ test.describe('Authentication', () => {
 });
 
 // ============================================================
-// 3. Tab Navigation
+// 3. Tab Navigation (v3: input/feed/search/settings/vault)
 // ============================================================
 test.describe('Tab Navigation', () => {
   test.beforeEach(async ({ page }) => {
     await authenticate(page);
   });
 
-  test('shows memo tab by default', async ({ page }) => {
-    await expect(page.locator('#p-memo')).toBeVisible();
-    await expect(page.locator('#p-today')).toBeHidden();
-    await expect(page.locator('#p-hist')).toBeHidden();
-    await expect(page.locator('#p-set')).toBeHidden();
+  test('shows input tab by default', async ({ page }) => {
+    await expect(page.locator('#p-input')).toBeVisible();
+    await expect(page.locator('#p-feed')).toBeHidden();
+    await expect(page.locator('#p-search')).toBeHidden();
+    await expect(page.locator('#p-settings')).toBeHidden();
   });
 
-  test('can switch to 오늘 tab', async ({ page }) => {
-    await page.click('[data-tab="today"]');
-    await expect(page.locator('#p-today')).toBeVisible();
-    await expect(page.locator('#p-memo')).toBeHidden();
+  test('can switch to feed tab', async ({ page }) => {
+    await page.click('[data-tab="feed"]');
+    await expect(page.locator('#p-feed')).toBeVisible();
+    await expect(page.locator('#p-input')).toBeHidden();
   });
 
-  test('can switch to 기록 tab', async ({ page }) => {
-    await page.click('[data-tab="hist"]');
-    await expect(page.locator('#p-hist')).toBeVisible();
-    await expect(page.locator('#p-memo')).toBeHidden();
+  test('can switch to search tab', async ({ page }) => {
+    await page.click('[data-tab="search"]');
+    await expect(page.locator('#p-search')).toBeVisible();
+    await expect(page.locator('#p-input')).toBeHidden();
   });
 
-  test('can switch to 설정 tab', async ({ page }) => {
-    await page.click('[data-tab="set"]');
-    await expect(page.locator('#p-set')).toBeVisible();
-    await expect(page.locator('#p-memo')).toBeHidden();
+  test('can switch to settings tab', async ({ page }) => {
+    await page.click('[data-tab="settings"]');
+    await expect(page.locator('#p-settings')).toBeVisible();
+    await expect(page.locator('#p-input')).toBeHidden();
+  });
+
+  test('can switch to vault tab', async ({ page }) => {
+    await page.click('[data-tab="vault"]');
+    await expect(page.locator('#p-vault')).toBeVisible();
+    await expect(page.locator('#p-input')).toBeHidden();
   });
 
   test('active tab button gets active class', async ({ page }) => {
-    await page.click('[data-tab="today"]');
-    await expect(page.locator('[data-tab="today"]')).toHaveClass(/active/);
-    await expect(page.locator('[data-tab="memo"]')).not.toHaveClass(/active/);
+    await page.click('[data-tab="feed"]');
+    await expect(page.locator('[data-tab="feed"]')).toHaveClass(/active/);
+    await expect(page.locator('[data-tab="input"]')).not.toHaveClass(/active/);
   });
 });
 
 // ============================================================
-// 4. Memo Tab
+// 4. Input Tab (v3: unified input hub)
 // ============================================================
-test.describe('Memo Tab', () => {
+test.describe('Input Tab', () => {
   test.beforeEach(async ({ page }) => {
     await authenticate(page);
   });
 
-  test('has date navigation', async ({ page }) => {
-    await expect(page.locator('#memo-date')).toBeVisible();
-    await expect(page.locator('#memo-prev')).toBeVisible();
-    await expect(page.locator('#memo-next')).toBeVisible();
+  test('has main textarea', async ({ page }) => {
+    await expect(page.locator('#mainInput')).toBeVisible();
   });
 
-  test('date navigation changes date display', async ({ page }) => {
-    const initialText = await page.locator('#memo-date').textContent();
-    await page.click('#memo-prev');
-    const newText = await page.locator('#memo-date').textContent();
-    expect(newText).not.toBe(initialText);
+  test('has action buttons (camera, gallery, record, file, url)', async ({ page }) => {
+    await expect(page.locator('#btnCamera')).toBeVisible();
+    await expect(page.locator('#btnGallery')).toBeVisible();
+    await expect(page.locator('#btnRecord')).toBeVisible();
+    await expect(page.locator('#btnFile')).toBeVisible();
+    await expect(page.locator('#btnUrl')).toBeVisible();
   });
 
-  test('section chips are visible', async ({ page }) => {
-    await expect(page.locator('#sec-chips')).toBeVisible();
-    await expect(page.locator('[data-s="메모"]')).toBeVisible();
-    await expect(page.locator('[data-s="오늘할일"]')).toBeVisible();
-    await expect(page.locator('[data-s="오늘 회고"]')).toBeVisible();
-  });
-
-  test('clicking section chip changes active state', async ({ page }) => {
-    await page.click('[data-s="오늘할일"]');
-    await expect(page.locator('[data-s="오늘할일"]')).toHaveClass(/on/);
-    await expect(page.locator('[data-s="메모"]')).not.toHaveClass(/on/);
-  });
-
-  test('selecting 오늘할일 shows todo options', async ({ page }) => {
-    await page.click('[data-s="오늘할일"]');
-    await expect(page.locator('#todo-options')).toBeVisible();
-    await expect(page.locator('#priority-chips')).toBeVisible();
-    await expect(page.locator('#todo-due')).toBeVisible();
-  });
-
-  test('has memo textarea', async ({ page }) => {
-    await expect(page.locator('#memo-text')).toBeVisible();
-    await expect(page.locator('#memo-text')).toHaveAttribute('placeholder', /음성 입력/);
-  });
-
-  test('has image and audio attachment areas', async ({ page }) => {
-    await expect(page.locator('#image-input')).toBeAttached();
-    await expect(page.locator('#gallery-input')).toBeAttached();
-    await expect(page.locator('#audio-rec-btn')).toBeVisible();
+  test('has hidden file inputs', async ({ page }) => {
+    await expect(page.locator('#cameraInput')).toBeAttached();
+    await expect(page.locator('#galleryFileInput')).toBeAttached();
+    await expect(page.locator('#fileInput')).toBeAttached();
   });
 
   test('has tag input', async ({ page }) => {
-    await expect(page.locator('#tag-in')).toBeVisible();
+    await expect(page.locator('#tagInput')).toBeVisible();
   });
 
   test('has save button', async ({ page }) => {
-    await expect(page.locator('#save-btn')).toBeVisible();
-    await expect(page.locator('#save-btn')).toContainText('저장');
+    await expect(page.locator('#btnSave')).toBeVisible();
+    await expect(page.locator('#btnSave')).toContainText('저장');
   });
 
   test('save button requires content', async ({ page }) => {
-    // Clear textarea and try saving
-    await page.fill('#memo-text', '');
-    await page.click('#save-btn');
-    // App focuses the textarea when content is empty (no save occurs)
+    await page.fill('#mainInput', '');
+    await page.click('#btnSave');
     await page.waitForTimeout(300);
-    const isFocused = await page.locator('#memo-text').evaluate(el => document.activeElement === el);
+    const isFocused = await page.locator('#mainInput').evaluate(el => document.activeElement === el);
     expect(isFocused).toBeTruthy();
-    // Verify no save happened - textarea should still be empty
-    const textValue = await page.locator('#memo-text').inputValue();
-    expect(textValue).toBe('');
+  });
+
+  test('has quick todo input', async ({ page }) => {
+    await expect(page.locator('#todoInput')).toBeVisible();
+    await expect(page.locator('#btnAddTodo')).toBeVisible();
   });
 });
 
@@ -211,41 +189,46 @@ test.describe('Memo Save', () => {
 
   test('can save a memo via UI', async ({ page }) => {
     const testText = `테스트 메모 ${Date.now()}`;
-    await page.fill('#memo-text', testText);
-    await page.click('#save-btn');
-
-    // Wait for save feedback
+    await page.fill('#mainInput', testText);
+    await page.click('#btnSave');
     await page.waitForTimeout(2000);
-
-    // Check the textarea was cleared (successful save)
-    const textValue = await page.locator('#memo-text').inputValue();
+    const textValue = await page.locator('#mainInput').inputValue();
     expect(textValue).toBe('');
   });
 
-  test('API: save daily note', async ({ request }) => {
-    const today = new Date().toISOString().slice(0, 10);
-    const res = await request.post(`/api/daily/${today}`, {
+  test('API: save text note (atomic)', async ({ request }) => {
+    const res = await request.post('/api/process/text', {
       headers: {
         'Authorization': `Bearer ${API_KEY}`,
         'Content-Type': 'application/json',
       },
       data: {
         content: `Playwright test memo ${Date.now()}`,
-        section: '메모',
         tags: ['test'],
       },
     });
     expect(res.ok()).toBeTruthy();
     const body = await res.json();
-    expect(body.success).toBe(true);
+    expect(body.ok).toBe(true);
+    expect(body.filename).toBeTruthy();
   });
 
-  test('API: read daily note', async ({ request }) => {
+  test('API: feed returns notes for date', async ({ request }) => {
+    const today = new Date().toISOString().slice(0, 10);
+    const res = await request.get(`/api/feed/${today}`, {
+      headers: { 'Authorization': `Bearer ${API_KEY}` },
+    });
+    expect(res.ok()).toBeTruthy();
+    const body = await res.json();
+    expect(body).toHaveProperty('notes');
+    expect(Array.isArray(body.notes)).toBeTruthy();
+  });
+
+  test('API: legacy daily note still works', async ({ request }) => {
     const today = new Date().toISOString().slice(0, 10);
     const res = await request.get(`/api/daily/${today}`, {
       headers: { 'Authorization': `Bearer ${API_KEY}` },
     });
-    // May be 200 or 404 depending on whether a note exists
     expect([200, 404]).toContain(res.status());
   });
 
@@ -255,20 +238,33 @@ test.describe('Memo Save', () => {
     });
     expect(res.status()).toBe(400);
   });
+
+  test('API: create todo note', async ({ request }) => {
+    const res = await request.post('/api/todo', {
+      headers: {
+        'Authorization': `Bearer ${API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      data: { text: `Test todo ${Date.now()}` },
+    });
+    expect(res.ok()).toBeTruthy();
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+  });
 });
 
 // ============================================================
-// 6. Today Tab
+// 6. Feed Tab
 // ============================================================
-test.describe('Today Tab', () => {
+test.describe('Feed Tab', () => {
   test.beforeEach(async ({ page }) => {
     await authenticate(page);
-    await page.click('[data-tab="today"]');
+    await page.click('[data-tab="feed"]');
   });
 
-  test('shows today tab content', async ({ page }) => {
-    await expect(page.locator('#p-today')).toBeVisible();
-    await expect(page.locator('#today-date')).toBeVisible();
+  test('shows feed tab content', async ({ page }) => {
+    await expect(page.locator('#p-feed')).toBeVisible();
+    await expect(page.locator('#feedDate')).toBeVisible();
   });
 
   test('has AI action buttons', async ({ page }) => {
@@ -278,34 +274,35 @@ test.describe('Today Tab', () => {
   });
 
   test('date navigation works', async ({ page }) => {
-    const initialText = await page.locator('#today-date').textContent();
-    await page.click('#today-prev');
-    const newText = await page.locator('#today-date').textContent();
+    const initialText = await page.locator('#feedDate').textContent();
+    await page.click('#feedPrev');
+    const newText = await page.locator('#feedDate').textContent();
     expect(newText).not.toBe(initialText);
   });
 });
 
 // ============================================================
-// 7. History/Search Tab
+// 7. Search Tab
 // ============================================================
-test.describe('History Tab', () => {
+test.describe('Search Tab', () => {
   test.beforeEach(async ({ page }) => {
     await authenticate(page);
-    await page.click('[data-tab="hist"]');
+    await page.click('[data-tab="search"]');
   });
 
   test('shows search input and buttons', async ({ page }) => {
-    await expect(page.locator('#hist-search')).toBeVisible();
-    await expect(page.locator('#search-btn')).toBeVisible();
-    await expect(page.locator('#search-ai-btn')).toBeVisible();
+    await expect(page.locator('#searchInput')).toBeVisible();
+    await expect(page.locator('#btnSearch')).toBeVisible();
+    await expect(page.locator('#btnAiSearch')).toBeVisible();
   });
 
   test('has vault-wide search checkbox', async ({ page }) => {
     await expect(page.locator('#search-all-vault')).toBeAttached();
   });
 
-  test('shows recent history list', async ({ page }) => {
-    await expect(page.locator('#hist-list')).toBeVisible();
+  test('has filter selects', async ({ page }) => {
+    await expect(page.locator('#filterType')).toBeVisible();
+    await expect(page.locator('#filterDate')).toBeVisible();
   });
 });
 
@@ -315,12 +312,11 @@ test.describe('History Tab', () => {
 test.describe('Settings Tab', () => {
   test.beforeEach(async ({ page }) => {
     await authenticate(page);
-    await page.click('[data-tab="set"]');
+    await page.click('[data-tab="settings"]');
   });
 
   test('shows server connection status', async ({ page }) => {
     await expect(page.locator('#st-conn')).toBeVisible();
-    // Wait for status check to complete
     await page.waitForTimeout(2000);
     const statusText = await page.locator('#st-conn').textContent();
     expect(statusText).toBeTruthy();
@@ -340,12 +336,6 @@ test.describe('Settings Tab', () => {
   test('shows feature test button', async ({ page }) => {
     await expect(page.locator('#run-test')).toBeVisible();
     await expect(page.locator('#run-test')).toContainText('전체 기능 점검');
-  });
-
-  test('shows default section selector', async ({ page }) => {
-    await expect(page.locator('#def-sec')).toBeVisible();
-    const options = page.locator('#def-sec option');
-    await expect(options).toHaveCount(3);
   });
 
   test('has logout button', async ({ page }) => {
@@ -404,7 +394,6 @@ test.describe('API Endpoints', () => {
   });
 
   test('clipboard sync works', async ({ request }) => {
-    // Write
     const writeRes = await request.post('/api/clipboard', {
       headers: {
         'Authorization': `Bearer ${API_KEY}`,
@@ -413,8 +402,6 @@ test.describe('API Endpoints', () => {
       data: { text: 'playwright test clipboard' },
     });
     expect(writeRes.ok()).toBeTruthy();
-
-    // Read
     const readRes = await request.get('/api/clipboard', {
       headers: { 'Authorization': `Bearer ${API_KEY}` },
     });

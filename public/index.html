@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="VaultVoice">
-<meta name="theme-color" content="#007AFF">
+<meta name="theme-color" content="#0a0a0a">
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
 <link rel="stylesheet" href="/app.css">
@@ -29,7 +29,7 @@
 
 <!-- App -->
 <div id="app" style="display:none">
-  <header><h1 id="hdr">메모</h1></header>
+  <header><h1 id="hdr">입력</h1></header>
 
   <!-- Reminder Banner -->
   <div id="reminder-banner" class="reminder-banner" style="display:none">
@@ -38,85 +38,41 @@
   </div>
 
   <main>
-    <!-- 메모 -->
-    <section id="p-memo" class="tab-panel active">
-      <div class="date-nav">
-        <button class="btn-icon" id="memo-prev">&lsaquo;</button>
-        <button id="memo-date" class="date-btn">오늘</button>
-        <button class="btn-icon" id="memo-next">&rsaquo;</button>
-      </div>
-      <div class="form-group">
-        <label>섹션</label>
-        <div class="chips" id="sec-chips">
-          <button class="chip on" data-s="메모">메모</button>
-          <button class="chip" data-s="오늘할일">오늘할일</button>
-          <button class="chip" data-s="오늘 회고">오늘 회고</button>
+
+    <!-- 입력 탭 -->
+    <section id="p-input" class="tab-panel active">
+      <div class="input-hub">
+        <textarea id="mainInput" class="main-input" placeholder="무엇이든 입력하세요..." rows="3"></textarea>
+        <div class="input-actions">
+          <button id="btnCamera" class="action-btn" title="카메라">📷</button>
+          <button id="btnGallery" class="action-btn" title="갤러리">🖼️</button>
+          <button id="btnRecord" class="action-btn" title="녹음">🎙️</button>
+          <button id="btnFile" class="action-btn" title="파일">📎</button>
+          <button id="btnUrl" class="action-btn" title="URL">🔗</button>
         </div>
+        <!-- Hidden file inputs -->
+        <input type="file" id="cameraInput" accept="image/*" style="display:none">
+        <input type="file" id="galleryFileInput" accept="image/*" style="display:none">
+        <input type="file" id="fileInput" accept="audio/mp4,audio/x-m4a,.m4a,audio/mpeg,audio/webm" style="display:none">
+        <div id="previewArea" class="preview-area" style="display:none"></div>
+        <div class="tag-input-area">
+          <div id="tagList" class="tag-list"></div>
+          <input id="tagInput" class="tag-input" placeholder="태그 추가 (Enter)" autocomplete="off" autocorrect="off" autocapitalize="off">
+        </div>
+        <button id="btnSave" class="btn-primary btn-save">저장</button>
+      </div>
+      <div id="inputFeedback" class="feedback" style="display:none"></div>
+
+      <!-- Todo quick bar -->
+      <div class="todo-section">
+        <div class="todo-input-row">
+          <input id="todoInput" class="todo-input" placeholder="할일 추가..." autocorrect="off">
+          <button id="btnAddTodo" class="btn-small">+</button>
+        </div>
+        <div id="quickTodoList" class="todo-list"></div>
       </div>
 
-      <!-- Todo options (shown when 오늘할일 selected) -->
-      <div id="todo-options" class="form-group" style="display:none">
-        <label>우선순위</label>
-        <div class="chips" id="priority-chips">
-          <button class="chip priority-chip" data-p="높음">🔴 높음</button>
-          <button class="chip priority-chip on" data-p="보통">🔵 보통</button>
-          <button class="chip priority-chip" data-p="낮음">🟢 낮음</button>
-        </div>
-        <label style="margin-top:10px">마감일</label>
-        <input type="date" id="todo-due" class="input">
-      </div>
-
-      <div class="form-group">
-        <label>내용</label>
-        <div class="memo-input-wrap">
-          <textarea id="memo-text" class="input" placeholder="여기를 탭하고 키보드 🎙️ 버튼으로 음성 입력..." rows="6"></textarea>
-          <div class="memo-btns">
-            <button id="newline-btn" class="memo-tool-btn" title="줄바꿈">↵</button>
-            <button id="mic-btn" class="mic-btn" title="음성 인식">🎤</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Image attachments -->
-      <div class="form-group">
-        <label>이미지</label>
-        <div class="image-attach-row">
-          <label class="btn-icon image-pick-btn" title="카메라 촬영">
-            📷
-            <input type="file" id="image-input" accept="image/*" capture="environment" style="display:none">
-          </label>
-          <label class="btn-icon image-pick-btn" title="갤러리에서 선택">
-            🖼️
-            <input type="file" id="gallery-input" accept="image/*" style="display:none">
-          </label>
-        </div>
-        <div id="image-preview" class="image-preview-list"></div>
-      </div>
-
-      <!-- Audio recording -->
-      <div class="form-group">
-        <label>음성 녹음</label>
-        <div class="chips" id="audio-type-chips" style="margin-bottom:8px">
-          <button class="chip on" data-at="voice">🎙️ 일반</button>
-          <button class="chip" data-at="meeting">🤝 회의</button>
-        </div>
-        <div class="audio-attach-row">
-          <button id="audio-rec-btn" class="btn-icon audio-rec-btn" title="녹음 시작">🎙️</button>
-          <span id="audio-rec-status" class="audio-rec-status"></span>
-        </div>
-        <div id="audio-preview" class="audio-preview-list"></div>
-      </div>
-
-      <div class="form-group">
-        <label>태그</label>
-        <div id="tags-display" class="tag-list"></div>
-        <div style="position:relative">
-          <input type="text" id="tag-in" class="input" placeholder="태그 추가 (Enter)" autocomplete="off" autocorrect="off" autocapitalize="off">
-          <div id="tag-sug" class="suggestions" style="display:none"></div>
-        </div>
-      </div>
-      <button class="btn btn-save" id="save-btn">저장</button>
-      <div id="save-fb" class="feedback" style="display:none"></div>
+      <!-- Calendar event detection banner -->
       <div id="event-detect-banner" class="event-detect-banner" style="display:none">
         <div class="event-detect-content">
           <div class="event-detect-icon">📅</div>
@@ -127,17 +83,17 @@
         </div>
         <div class="event-detect-actions">
           <button class="btn-sm" id="event-detect-add" style="background:var(--blue);color:#fff">등록</button>
-          <button class="btn-sm" id="event-detect-dismiss" style="background:var(--bg-card);color:var(--text2)">무시</button>
+          <button class="btn-sm" id="event-detect-dismiss" style="background:var(--bg-card);color:var(--text2);border:1px solid var(--sep)">무시</button>
         </div>
       </div>
     </section>
 
-    <!-- 오늘 -->
-    <section id="p-today" class="tab-panel">
+    <!-- 피드 탭 -->
+    <section id="p-feed" class="tab-panel">
       <div class="date-nav">
-        <button class="btn-icon" id="today-prev">&lsaquo;</button>
-        <button id="today-date" class="date-btn">오늘</button>
-        <button class="btn-icon" id="today-next">&rsaquo;</button>
+        <button id="feedPrev" class="nav-btn">&#9665;</button>
+        <span id="feedDate" class="date-display"></span>
+        <button id="feedNext" class="nav-btn">&#9655;</button>
       </div>
       <!-- AI Buttons -->
       <div id="ai-buttons" class="ai-buttons">
@@ -146,39 +102,55 @@
         <button class="btn-sm ai-btn" data-action="categorize">분류</button>
       </div>
       <div id="ai-result" class="ai-result" style="display:none"></div>
-      <!-- Todo List -->
+      <!-- Todo List Section -->
       <div id="todo-list-section" style="display:none">
         <h3 class="todo-section-title">할일 목록</h3>
         <div id="todo-list" class="todo-list"></div>
       </div>
-      <div id="today-body" class="note-content"><div class="empty">로딩 중...</div></div>
+      <div id="feedCards" class="feed-cards">
+        <div class="empty">로딩 중...</div>
+      </div>
     </section>
 
-    <!-- 기록 -->
-    <section id="p-hist" class="tab-panel">
-      <div class="search-wrap">
-        <input type="text" id="hist-search" class="input search-input" placeholder="검색어 입력 (🎙️ 키보드 마이크)" autocomplete="off" autocorrect="on" spellcheck="false">
-        <button id="search-mic-btn" class="search-mic-btn" style="display:none" title="음성 검색">🎤</button>
+    <!-- 검색 탭 -->
+    <section id="p-search" class="tab-panel">
+      <div class="search-bar">
+        <input id="searchInput" class="search-input" placeholder="검색어 입력..." autocomplete="off" autocorrect="on" spellcheck="false">
+        <button id="btnSearch" class="btn-small">검색</button>
+        <button id="btnAiSearch" class="btn-small btn-ai">AI</button>
       </div>
-      <div style="display:flex;gap:8px;margin-bottom:6px">
-        <button id="search-btn" class="search-go-btn" style="flex:1">검색</button>
-        <button id="search-ai-btn" class="search-go-btn" style="flex:1;background:var(--green)">AI 검색</button>
+      <div class="search-filters">
+        <select id="filterType" class="filter-select">
+          <option value="">전체 유형</option>
+          <option value="voice">🎙️ 음성</option>
+          <option value="image">📷 이미지</option>
+          <option value="url">🔗 URL</option>
+          <option value="memo">✏️ 메모</option>
+          <option value="todo">✅ 할일</option>
+        </select>
+        <select id="filterDate" class="filter-select">
+          <option value="7">최근 7일</option>
+          <option value="30">최근 30일</option>
+          <option value="90">최근 90일</option>
+          <option value="">전체</option>
+        </select>
       </div>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding-left:4px">
         <label style="font-size:13px;color:var(--text2);display:flex;align-items:center;gap:4px">
           <input type="checkbox" id="search-all-vault"> 전체 볼트 검색
         </label>
       </div>
-      <div id="search-results" style="display:none;margin-bottom:12px"></div>
-      <div id="hist-list"><div class="empty">로딩 중...</div></div>
+      <div id="searchResults" class="search-results"></div>
+      <!-- History list fallback -->
+      <div id="hist-list" style="display:none"><div class="empty">로딩 중...</div></div>
       <div id="hist-overlay" class="overlay" style="display:none">
         <button class="close-btn" id="hist-close">&times;</button>
         <div id="hist-detail" class="note-content"></div>
       </div>
     </section>
 
-    <!-- 설정 -->
-    <section id="p-set" class="tab-panel">
+    <!-- 설정 탭 -->
+    <section id="p-settings" class="tab-panel">
       <!-- QR 코드 (아이폰 접속용) -->
       <div class="s-group">
         <h2>QR 코드 (아이폰 스캔)</h2>
@@ -200,6 +172,13 @@
         <div id="clip-status" style="font-size:12px;color:var(--text2);margin-top:6px;text-align:center"></div>
       </div>
 
+      <!-- 서버 연결 -->
+      <div class="s-group">
+        <h2>서버 연결</h2>
+        <div class="s-row"><span>상태</span><span id="st-conn" class="badge">확인중</span></div>
+        <div class="s-row" style="border-top:1px solid var(--sep);padding-top:10px;margin-top:4px"><span>볼트</span><span id="st-vault" class="s-val">-</span></div>
+      </div>
+
       <!-- 기능 테스트 -->
       <div class="s-group">
         <h2>기능 테스트</h2>
@@ -207,13 +186,7 @@
         <div id="test-results" style="margin-top:10px"></div>
       </div>
 
-      <div class="s-group">
-        <h2>서버 연결</h2>
-        <div class="s-row"><span>상태</span><span id="st-conn" class="badge">확인중</span></div>
-        <div class="s-row" style="border-top:0.5px solid var(--sep);padding-top:10px;margin-top:4px"><span>볼트</span><span id="st-vault" class="s-val">-</span></div>
-      </div>
-      
-      <!-- Phase 3: RAG Knowledge Base -->
+      <!-- RAG Knowledge Base -->
       <div class="s-group">
         <h2>지식 베이스 (RAG)</h2>
         <p style="font-size:13px;color:var(--text2);margin-bottom:8px">내 노트 내용을 AI가 이해하도록 학습시킵니다.</p>
@@ -221,7 +194,7 @@
         <div id="reindex-status" style="margin-top:8px;font-size:12px;color:var(--text2)"></div>
       </div>
 
-      <!-- Phase 4: Google Calendar -->
+      <!-- Google Calendar -->
       <div class="s-group">
         <h2>구글 캘린더 연동</h2>
         <p style="font-size:13px;color:var(--text2);margin-bottom:8px">일정 조회 및 추가를 위해 계정을 연결하세요.</p>
@@ -239,33 +212,52 @@
         </div>
       </div>
 
-      <div class="s-group">
-        <h2>기본 섹션</h2>
-        <select id="def-sec" class="input">
-
-          <option value="메모">메모</option>
-          <option value="오늘할일">오늘할일</option>
-          <option value="오늘 회고">오늘 회고</option>
-        </select>
-      </div>
-      <!-- Reminders list -->
+      <!-- 알림 목록 -->
       <div class="s-group">
         <h2>알림 목록</h2>
-    <div id="reminder-list" class="reminder-list"><div class="empty">설정된 알림 없음</div></div>
+        <div id="reminder-list" class="reminder-list"><div class="empty" style="padding:12px;font-size:13px">설정된 알림 없음</div></div>
       </div>
+
       <div class="s-group">
         <button class="btn-danger" id="logout-btn">로그아웃</button>
       </div>
-      <div class="ver">VaultVoice v2.0</div>
+      <div class="ver">VaultVoice v3.0</div>
     </section>
+
+    <!-- 관리 탭 (vault.html로 이동) -->
+    <section id="p-vault" class="tab-panel">
+      <div class="s-group" style="text-align:center;padding:32px 16px">
+        <div style="font-size:48px;margin-bottom:12px">📁</div>
+        <h2 style="font-size:16px;font-weight:600;color:var(--text);text-transform:none;margin-bottom:8px">볼트 관리자</h2>
+        <p style="font-size:14px;color:var(--text2);margin-bottom:16px">파일 탐색, 읽기/쓰기, 이동, 백링크 등 볼트 전체 관리</p>
+        <a href="/vault" class="btn" style="display:inline-block;width:auto;padding:12px 32px;text-decoration:none">볼트 관리자 열기</a>
+      </div>
+    </section>
+
   </main>
 
-  <nav>
-    <button class="tab-item active" data-tab="memo"><span class="tab-icon">&#9998;</span><span>메모</span></button>
-    <button class="tab-item" data-tab="today"><span class="tab-icon">&#128203;</span><span>오늘</span></button>
-    <button class="tab-item" data-tab="hist"><span class="tab-icon">&#128218;</span><span>기록</span></button>
-    <button class="tab-item" data-tab="set"><span class="tab-icon">&#9881;</span><span>설정</span></button>
-    <a href="/vault" class="tab-item" style="text-decoration:none;color:inherit"><span class="tab-icon">&#129412;</span><span>관리</span></a>
+  <!-- Tab Bar -->
+  <nav class="tab-bar" id="tabBar">
+    <button class="tab-btn active" data-tab="input">
+      <span class="tab-icon">✏️</span>
+      <span class="tab-label">입력</span>
+    </button>
+    <button class="tab-btn" data-tab="feed">
+      <span class="tab-icon">📋</span>
+      <span class="tab-label">피드</span>
+    </button>
+    <button class="tab-btn" data-tab="search">
+      <span class="tab-icon">🔍</span>
+      <span class="tab-label">검색</span>
+    </button>
+    <button class="tab-btn" data-tab="settings">
+      <span class="tab-icon">⚙️</span>
+      <span class="tab-label">설정</span>
+    </button>
+    <button class="tab-btn" data-tab="vault">
+      <span class="tab-icon">📁</span>
+      <span class="tab-label">관리</span>
+    </button>
   </nav>
 </div>
 
@@ -311,7 +303,6 @@
         <button id="jarvis-close" class="jarvis-header-btn" title="닫기">&times;</button>
       </div>
     </div>
-
     <div id="jarvis-chat" class="jarvis-chat">
       <div class="jarvis-welcome">
         <div class="jarvis-welcome-icon">🤖</div>
@@ -324,7 +315,6 @@
         </div>
       </div>
     </div>
-
     <div class="jarvis-input-area">
       <input type="text" id="jarvis-input" class="jarvis-input" placeholder="메시지 입력..." autocomplete="off">
       <button id="jarvis-send" class="jarvis-send-btn" title="전송">➤</button>
