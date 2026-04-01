@@ -1178,6 +1178,19 @@ app.post('/api/ai/chat', async (req, res) => {
   }
 
   const todayStr = new Date().toISOString().slice(0, 10);
+
+  // Pre-search: always run search before Gemini to guarantee results are available
+  let preSearchContext = '';
+  try {
+    const preSearchResult = await executeSearch(message.trim());
+    if (preSearchResult.result && preSearchResult.result !== '검색 결과가 없습니다.') {
+      preSearchContext = `\n\n[Pre-search results for user message]\n${preSearchResult.result}`;
+      console.log('[Jarvis] Pre-search found results for:', message.trim());
+    }
+  } catch (e) {
+    console.error('[Jarvis] Pre-search failed:', e.message);
+  }
+
   const systemPrompt = `You are Jarvis, a concise personal assistant for VaultVoice (Obsidian vault).
 Current Date: ${todayStr} (${getDayName(todayStr)})
 
@@ -1201,9 +1214,10 @@ Available tools:
 Rules:
 - Answer in Korean. Be concise and friendly.
 - When the user mentions ANY topic, ALWAYS use the search tool first to check if related notes exist. Use synonyms and related terms too (e.g. "헬스" → also search "운동", "줄넘기", "요가", "gym"; "공부" → also search "학습", "스터디").
+- If pre-search results are provided below, use them to answer. Use read_note to get full details if needed.
 - If search finds related notes, reference them in your answer. Suggest relevant content, alternatives, or related items from the notes.
 - When adding items, default to today's date unless specified.
-- Keep responses short — max 3-4 sentences for simple questions.`;
+- Keep responses short — max 3-4 sentences for simple questions.${preSearchContext}`;
 
   const contents = buildContents(history, message);
   const MAX_TOOL_ROUNDS = 3;
