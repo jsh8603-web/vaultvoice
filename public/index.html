@@ -9,7 +9,7 @@
 <meta name="theme-color" content="#0a0a0a">
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
-<link rel="stylesheet" href="/app.css">
+<link rel="stylesheet" href="/app.css?v=3.0">
 <title>VaultVoice</title>
 </head>
 <body>
@@ -389,13 +389,27 @@
 <div id="jarvis-overlay" style="display:none"></div>
 
 <script>
-// Force SW update on every page load (inline, cache-proof)
-if ('serviceWorker' in navigator) {
+// Force SW update + nuke old caches on every page load
+(function() {
+  if (!('serviceWorker' in navigator)) return;
+  var TARGET_VER = 'vaultvoice-v3.0';
+  // Check if we need a hard refresh
+  if (!sessionStorage.getItem('vv_v30')) {
+    caches.keys().then(function(keys) {
+      var stale = keys.filter(function(k) { return k !== TARGET_VER; });
+      if (stale.length > 0) {
+        Promise.all(stale.map(function(k) { return caches.delete(k); })).then(function() {
+          sessionStorage.setItem('vv_v30', '1');
+          location.reload();
+        });
+      }
+    });
+  }
   navigator.serviceWorker.getRegistration().then(function(reg) {
     if (reg) reg.update();
   });
-}
+})();
 </script>
-<script src="/app.js"></script>
+<script src="/app.js?v=3.0"></script>
 </body>
 </html>
