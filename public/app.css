@@ -656,24 +656,57 @@ textarea.input { resize: vertical; min-height: 100px; line-height: 1.5; }
 }
 .audio-preview-item .audio-remove:active { background: rgba(239,108,108,0.08); }
 
-/* ============ AI Summarization ============ */
-.ai-buttons { display: flex; gap: 8px; margin-bottom: 12px; }
-.ai-btn { flex: 1; text-align: center; }
-.ai-btn:disabled { opacity: 0.4; }
-.ai-result {
-  background: var(--bg-card); border: 1px solid rgba(108,142,239,0.2);
-  border-radius: var(--radius); padding: 16px; margin-bottom: 12px;
-  font-size: 14px; line-height: 1.6; max-height: 300px; overflow-y: auto;
-  box-shadow: 0 0 16px rgba(108,142,239,0.08);
+/* ============ Card Actions ============ */
+.card-actions {
+  display: flex; gap: 8px; padding: 8px 0 0;
+  border-top: 1px solid var(--sep); margin-top: 8px;
 }
-.ai-result h3 { font-size: 15px; color: var(--accent); margin-bottom: 8px; }
-.ai-tag-chip {
-  display: inline-block; padding: 4px 12px; margin: 3px;
-  background: var(--accent-soft); color: var(--accent);
-  border-radius: 14px; font-size: 13px; cursor: pointer;
-  border: 1px solid transparent; transition: all 0.15s;
+.card-action-btn {
+  background: none; border: 1px solid var(--sep); border-radius: 8px;
+  padding: 6px 12px; font-size: 14px; cursor: pointer; color: var(--text2);
+  transition: all 0.2s; -webkit-tap-highlight-color: transparent; font-family: inherit;
 }
-.ai-tag-chip:active { background: var(--accent); color: #fff; }
+.card-action-btn:active { background: var(--bg-elevated); transform: scale(0.95); }
+.card-action-delete { margin-left: auto; color: var(--red); }
+.card-summary {
+  margin-top: 8px; padding: 10px 12px; background: var(--bg-elevated);
+  border-radius: 8px; font-size: 13px; color: var(--text2); line-height: 1.5;
+}
+.card-comment-input { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.card-comment-input textarea {
+  width: 100%; border: 1px solid var(--sep); border-radius: 8px; padding: 8px;
+  font-size: 13px; resize: none; background: var(--bg); color: var(--text);
+  font-family: inherit; outline: none; -webkit-appearance: none;
+  transition: border-color 0.2s;
+}
+.card-comment-input textarea:focus { border-color: var(--accent); }
+
+/* ============ Related Notes ============ */
+.related-notes {
+  margin-top: 8px; padding: 8px; background: var(--bg-elevated);
+  border-radius: 8px; font-size: 12px;
+}
+.related-label {
+  display: block; font-weight: 600; color: var(--text2); margin-bottom: 4px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.related-link {
+  display: inline-block; background: var(--bg); border: 1px solid var(--sep);
+  border-radius: 6px; padding: 4px 8px; margin: 2px; font-size: 12px;
+  color: var(--accent); cursor: pointer; text-decoration: none;
+}
+
+/* ============ Jarvis Onboarding ============ */
+.jarvis-onboarding { padding: 16px; text-align: center; }
+.onboarding-title { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 12px; }
+.onboarding-buttons { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.onboarding-btn {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
+  padding: 10px 16px; font-size: 13px; cursor: pointer; color: var(--text);
+  transition: all 0.2s; white-space: nowrap; font-family: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+.onboarding-btn:active { background: var(--bg-elevated); transform: scale(0.97); }
 
 /* ============ Reminders ============ */
 .reminder-banner {

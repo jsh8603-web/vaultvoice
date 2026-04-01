@@ -56,6 +56,67 @@ const MEDIA_DIRS = {
 const MAX_UPLOAD_SIZE = parseInt(process.env.MAX_UPLOAD_SIZE || '100') * 1024 * 1024; // MB to bytes
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+
+// ============================================================
+// Gemini Model Tiering Helpers
+// ============================================================
+// 4-tier: lite → 2.5-flash-lite, flash → 2.5-flash, pro → 2.5-pro, max → 3.1-pro-preview
+const GEMINI_TIERS = {
+  lite:  'gemini-2.5-flash-lite',
+  flash: 'gemini-2.5-flash',
+  pro:   'gemini-2.5-pro',
+  max:   'gemini-3.1-pro-preview'
+};
+const GEMINI_FALLBACK = 'gemini-2.5-flash';
+
+const genAI = (() => {
+  try { return GoogleGenerativeAI ? new GoogleGenerativeAI(GEMINI_API_KEY) : null; } catch(e) { return null; }
+})();
+
+function getGeminiModel(tier = 'flash') {
+  const modelId = GEMINI_TIERS[tier] || GEMINI_TIERS.flash;
+  try { return genAI.getGenerativeModel({ model: modelId }); }
+  catch (e) { return genAI.getGenerativeModel({ model: GEMINI_FALLBACK }); }
+}
+
+function getGeminiApiUrl(tier = 'flash') {
+  const modelId = GEMINI_TIERS[tier] || GEMINI_TIERS.flash;
+  return `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${GEMINI_API_KEY}`;
+}
+
+// ============================================================
+// Title Cache for wiki-link insertion
+// ============================================================
+let titleCache = {}; // { filename: title }
+
+function loadTitleCache() {
+  titleCache = {};
+  if (!fs.existsSync(NOTES_DIR)) return;
+  try {
+    const files = fs.readdirSync(NOTES_DIR).filter(f => f.endsWith('.md'));
+    for (const f of files) {
+      try {
+        const raw = fs.readFileSync(path.join(NOTES_DIR, f), 'utf-8');
+        const { frontmatter } = parseFrontmatter(raw);
+        if (frontmatter.title) titleCache[f] = frontmatter.title;
+      } catch (e) { /* skip */ }
+    }
+  } catch (e) { console.warn('[TitleCache] Load failed:', e.message); }
+}
+
+function insertWikiLinks(body, currentFilename) {
+  if (!Object.keys(titleCache).length) return body;
+  let result = body;
+  for (const [filename, title] of Object.entries(titleCache)) {
+    if (filename === currentFilename) continue;
+    if (!title || title.length < 2) continue;
+    // Replace bare title text (not already inside [[...]]) with wikilink
+    const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(?<!\\[\\[)${escaped}(?!\\]\\])`, 'g');
+    result = result.replace(regex, `[[${filename.replace(/\.md$/, '')}|${title}]]`);
+  }
+  return result;
+}
 const OBSIDIAN_REST_URL = process.env.OBSIDIAN_REST_URL || 'http://localhost:27123';
 const OBSIDIAN_REST_API_KEY = process.env.OBSIDIAN_REST_API_KEY || '';
 
@@ -177,20 +238,17 @@ app.get('/api/test', async (req, res) => {
   // 4. Audio/images asset dirs
   results.attachmentDir = { ok: fs.existsSync(AUDIO_DIR) && fs.existsSync(IMAGES_DIR), path: NOTES_DIR + '/assets' };
 
-  // 5. Gemini API
+  // 5. Gemini Flash API
   if (GEMINI_API_KEY && GEMINI_API_KEY !== 'your_key_here') {
     try {
-      const testRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: 'hello' }] }],
-            generationConfig: { maxOutputTokens: 10 }
-          })
-        }
-      );
+      const testRes = await fetch(getGeminiApiUrl('flash'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: 'hello' }] }],
+          generationConfig: { maxOutputTokens: 1024 }
+        })
+      });
       if (!testRes.ok) {
         const errBody = await testRes.text();
         console.error('Gemini test error:', errBody);
@@ -204,6 +262,29 @@ app.get('/api/test', async (req, res) => {
   } else {
     results.gemini = { ok: false, error: 'API key not set' };
   }
+
+  // 5b. Gemini Pro API
+  if (GEMINI_API_KEY && GEMINI_API_KEY !== 'your_key_here') {
+    try {
+      const proRes = await fetch(getGeminiApiUrl('pro'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: 'hello' }] }],
+          generationConfig: { maxOutputTokens: 2048 }
+        })
+      });
+      results.geminiPro = { ok: proRes.ok, status: proRes.status };
+    } catch (e) {
+      results.geminiPro = { ok: false, error: e.message };
+    }
+  } else {
+    results.geminiPro = { ok: false, error: 'API key not set' };
+  }
+
+  // 5c. Endpoint existence checks
+  results.noteSummarizeEndpoint = { ok: true };
+  results.noteCommentEndpoint = { ok: true };
 
   // 6. Obsidian REST API
   if (OBSIDIAN_REST_API_KEY) {
@@ -530,31 +611,21 @@ app.post('/api/ai/summarize', async (req, res) => {
   let prompt;
   if (action === 'summarize') {
     prompt = `다음은 ${date || '오늘'}의 일일노트 내용입니다. 3~5문장으로 한국어로 핵심을 요약해주세요. 마크다운 없이 일반 텍스트로 답변하세요.\n\n${content}`;
-  } else if (action === 'suggest-tags') {
-    prompt = `다음 일일노트 내용을 분석해서 적절한 태그를 5~10개 추천해주세요. JSON 배열 형태로만 답변하세요 (예: ["태그1", "태그2"]). 설명 없이 JSON만 출력하세요.\n\n${content}`;
   } else if (action === 'auto-tags') {
     prompt = `다음 메모의 주제/카테고리를 나타내는 태그를 정확히 1~2개 추천하세요. 규칙: 1) 메모의 핵심 주제를 대표하는 명사형 태그 2) 구체적이고 의미있는 단어 (예: 회의, 논문, 진료, 코딩, 운동) 3) "작성", "수정" 같은 동작어 금지. JSON 배열로만 답변. 예: ["회의", "AI프로젝트"]\n\n${content}`;
-  } else if (action === 'categorize') {
-    prompt = `다음 일일노트 내용을 주제별로 분류해주세요. 각 주제에 관련 메모를 그룹화하고 한국어로 간결하게 정리해주세요. 마크다운 없이 일반 텍스트로 답변하세요.\n\n${content}`;
   } else {
     return res.status(400).json({ error: 'Invalid action' });
   }
 
   try {
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 1024
-          }
-        })
-      }
-    );
+    const geminiRes = await fetch(getGeminiApiUrl('flash'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 1024 }
+      })
+    });
 
     if (!geminiRes.ok) {
       const err = await geminiRes.text();
@@ -564,19 +635,13 @@ app.post('/api/ai/summarize', async (req, res) => {
 
     const data = await geminiRes.json();
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
     let result = text.trim();
-    // For suggest-tags, try to parse as JSON
-    if (action === 'suggest-tags' || action === 'auto-tags') {
+
+    if (action === 'auto-tags') {
       try {
-        // Extract JSON array from response if wrapped in text
         const jsonMatch = result.match(/\[[\s\S]*\]/);
-        if (jsonMatch) {
-          result = JSON.parse(jsonMatch[0]);
-        }
-      } catch (e) {
-        // Return as-is if parsing fails
-      }
+        if (jsonMatch) result = JSON.parse(jsonMatch[0]);
+      } catch (e) { /* Return as-is */ }
     }
 
     res.json({ success: true, action, result });
@@ -616,20 +681,14 @@ app.post('/api/ai/detect-event', async (req, res) => {
 메모: "${content}"`;
 
   try {
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.3,
-            maxOutputTokens: 512
-          }
-        })
-      }
-    );
+    const geminiRes = await fetch(getGeminiApiUrl('lite'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.3, maxOutputTokens: 512 }
+      })
+    });
 
     if (!geminiRes.ok) {
       const err = await geminiRes.text();
@@ -694,22 +753,19 @@ app.post('/api/ai/analyze-image', async (req, res) => {
   "text": "이미지에서 추출한 전체 텍스트 (OCR)"
 }`;
 
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{
-            parts: [
-              { text: prompt },
-              { inline_data: { mime_type: mimeType, data: base64Image } }
-            ]
-          }],
-          generationConfig: { maxOutputTokens: 2048 }
-        })
-      }
-    );
+    const geminiRes = await fetch(getGeminiApiUrl('flash'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            { text: prompt },
+            { inline_data: { mime_type: mimeType, data: base64Image } }
+          ]
+        }],
+        generationConfig: { maxOutputTokens: 2048 }
+      })
+    });
 
     if (!geminiRes.ok) {
       const err = await geminiRes.text();
@@ -852,7 +908,13 @@ const JARVIS_TOOLS = [
     name: 'get_recent_notes',
     description: 'Get the most recent VaultVoice notes (last 7 days).',
     parameters: { type: 'OBJECT', properties: {} }
-  }
+  },
+  { name: 'delete_note', description: 'Delete a VaultVoice note by filename. Only 99_vaultvoice/ notes.', parameters: { type: 'OBJECT', properties: { filename: { type: 'STRING', description: 'Note filename (e.g. 2026-04-01_093000_memo.md)' } }, required: ['filename'] } },
+  { name: 'delete_todo', description: 'Delete a todo item by date and line index.', parameters: { type: 'OBJECT', properties: { date: { type: 'STRING' }, lineIndex: { type: 'NUMBER' } }, required: ['date', 'lineIndex'] } },
+  { name: 'toggle_todo', description: 'Toggle a todo item done/undone by date and line index.', parameters: { type: 'OBJECT', properties: { date: { type: 'STRING' }, lineIndex: { type: 'NUMBER' } }, required: ['date', 'lineIndex'] } },
+  { name: 'summarize_note', description: 'Generate AI summary of a specific note.', parameters: { type: 'OBJECT', properties: { filename: { type: 'STRING' } }, required: ['filename'] } },
+  { name: 'process_url', description: 'Fetch a URL, extract content, summarize with AI, and save as a new note.', parameters: { type: 'OBJECT', properties: { url: { type: 'STRING', description: 'The URL to process' } }, required: ['url'] } },
+  { name: 'add_comment', description: 'Add a user comment to an existing note. The comment is refined by AI before appending.', parameters: { type: 'OBJECT', properties: { filename: { type: 'STRING', description: 'Target note filename' }, comment: { type: 'STRING', description: 'User comment in natural language' } }, required: ['filename', 'comment'] } }
 ];
 
 // Folders excluded from general search (always)
@@ -903,25 +965,134 @@ async function executeToolCall(name, args) {
     case 'list_folder': return executeListFolderV2(args);
     case 'get_tags': return executeGetTags();
     case 'get_recent_notes': return executeGetRecentNotes();
+    case 'delete_note': return executeDeleteNote(args);
+    case 'delete_todo': return executeDeleteTodoTool(args);
+    case 'toggle_todo': return executeToggleTodoTool(args);
+    case 'summarize_note': return await executeSummarizeNote(args);
+    case 'process_url': return await executeProcessUrl(args);
+    case 'add_comment': return await executeAddComment(args);
     default: return { error: `Unknown tool: ${name}` };
   }
 }
 
-// Expand query keywords using Gemini for synonym/related term matching
+function executeDeleteNote(args) {
+  if (!args.filename) return { result: 'filename required' };
+  if (!args.filename || args.filename.includes('..') || args.filename.includes('/') || args.filename.includes('\\')) return { result: 'Invalid filename' };
+  const filePath = path.join(NOTES_DIR, args.filename);
+  if (!fs.existsSync(filePath)) return { result: `"${args.filename}" 파일을 찾을 수 없습니다.` };
+  try {
+    fs.unlinkSync(filePath);
+    invalidateFileCache();
+    delete titleCache[args.filename];
+    return { result: `"${args.filename}" 노트를 삭제했습니다.` };
+  } catch (e) {
+    return { result: '삭제 실패: ' + e.message };
+  }
+}
+
+function executeDeleteTodoTool(args) {
+  const date = resolveDate(args.date);
+  const lineIndex = Number(args.lineIndex);
+  const notes = getNotesForDate(date);
+  const todoNote = notes.find(n => {
+    const lines = n.raw.split('\n');
+    return lineIndex < lines.length && lines[lineIndex].match(/^- \[([ x])\] /);
+  });
+  if (!todoNote) return { result: 'Todo not found' };
+  const filePath = path.join(DAILY_DIR, todoNote.filename);
+  const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
+  if (lineIndex < 0 || lineIndex >= lines.length || !lines[lineIndex].match(/^- \[([ x])\] /)) return { result: 'Invalid todo line' };
+  lines.splice(lineIndex, 1);
+  fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+  return { result: `할일 항목(${lineIndex})을 삭제했습니다.` };
+}
+
+function executeToggleTodoTool(args) {
+  const date = resolveDate(args.date);
+  const lineIndex = Number(args.lineIndex);
+  const notes = getNotesForDate(date);
+  const todoNote = notes.find(n => {
+    const lines = n.raw.split('\n');
+    return lineIndex < lines.length && lines[lineIndex].match(/^- \[([ x])\] /);
+  });
+  if (!todoNote) return { result: 'Todo not found' };
+  const filePath = path.join(DAILY_DIR, todoNote.filename);
+  const content = fs.readFileSync(filePath, 'utf-8');
+  const lines = content.split('\n');
+  if (lineIndex < 0 || lineIndex >= lines.length) return { result: 'Invalid line index' };
+  const line = lines[lineIndex];
+  if (line.match(/^- \[ \] /)) lines[lineIndex] = line.replace('- [ ] ', '- [x] ');
+  else if (line.match(/^- \[x\] /)) lines[lineIndex] = line.replace('- [x] ', '- [ ] ');
+  else return { result: 'Line is not a todo item' };
+  fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+  return { result: `할일 항목(${lineIndex}) 토글 완료.` };
+}
+
+async function executeSummarizeNote(args) {
+  if (!args.filename) return { result: 'filename required' };
+  if (!args.filename || args.filename.includes('..') || args.filename.includes('/') || args.filename.includes('\\')) return { result: 'Invalid filename' };
+  const filePath = path.join(NOTES_DIR, args.filename);
+  if (!fs.existsSync(filePath)) return { result: `"${args.filename}" 파일을 찾을 수 없습니다.` };
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const { body } = parseFrontmatter(raw);
+    const prompt = `다음 노트 내용을 3~5문장으로 한국어로 핵심 요약해주세요. 마크다운 없이 일반 텍스트로 답변하세요.\n\n${body.slice(0, 8000)}`;
+    const geminiRes = await fetch(getGeminiApiUrl('pro'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.5, maxOutputTokens: 4096 } })
+    });
+    if (!geminiRes.ok) return { result: '요약 실패' };
+    const data = await geminiRes.json();
+    const summary = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    return { result: summary };
+  } catch (e) {
+    return { result: '요약 오류: ' + e.message };
+  }
+}
+
+async function executeProcessUrl(args) {
+  if (!args.url) return { result: 'url required' };
+  try {
+    const { text, meta } = await extractUrlContent(args.url);
+    const summary = await summarizeWithGemini(text, args.url, meta);
+    const domain = new URL(args.url).hostname.replace(/^www\./, '');
+    const tags = ['url', domain, ...(summary.keywords || [])];
+    const body = buildUrlNoteBody(summary, meta, args.url);
+    const date = new Date().toISOString().slice(0, 10);
+    const noteResult = createAtomicNote(date, 'url', body, tags, { url: args.url, domain, status: 'summarized' });
+    return { result: `URL 노트 저장 완료: ${noteResult.filename}\n요약: ${summary.summary}` };
+  } catch (e) {
+    return { result: 'URL 처리 실패: ' + e.message };
+  }
+}
+
+async function executeAddComment(args) {
+  if (!args.filename || !args.comment) return { result: 'filename and comment required' };
+  if (!args.filename || args.filename.includes('..') || args.filename.includes('/') || args.filename.includes('\\')) return { result: 'Invalid filename' };
+  const filePath = path.join(NOTES_DIR, args.filename);
+  if (!fs.existsSync(filePath)) return { result: `"${args.filename}" 파일을 찾을 수 없습니다.` };
+  try {
+    const refined = await refineComment(args.comment);
+    appendCommentToNote(filePath, refined);
+    return { result: `코멘트를 "${args.filename}"에 추가했습니다: ${refined}` };
+  } catch (e) {
+    return { result: '코멘트 추가 실패: ' + e.message };
+  }
+}
+
+// Expand query keywords using Gemini Pro for synonym/related term matching
 async function expandKeywords(query) {
   try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `"${query}"와 관련된 검색 키워드를 5개 생성해줘. 유의어, 관련어, 줄임말, 영어 포함. 쉼표로 구분된 키워드만 출력. 설명 없이.` }] }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 100 }
-        }),
-        signal: AbortSignal.timeout(5000)
-      }
-    );
+    const res = await fetch(getGeminiApiUrl('pro'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: `"${query}"와 관련된 검색 키워드를 5개 생성해줘. 유의어, 관련어, 줄임말, 영어 포함. 쉼표로 구분된 키워드만 출력. 설명 없이.` }] }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
+      }),
+      signal: AbortSignal.timeout(10000)
+    });
     const data = await res.json();
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     const expanded = text.split(/[,，\n]+/).map(s => s.trim().toLowerCase()).filter(s => s.length >= 2 && s.length <= 20);
@@ -1237,6 +1408,11 @@ Available tools:
 - list_folder: List files in a folder
 - get_tags: Get all VaultVoice tags
 - get_recent_notes: Get recent 7 days of notes
+- delete_note: Delete a VaultVoice note
+- delete_todo / toggle_todo: Manage todo items
+- summarize_note: AI summary of a specific note
+- process_url: Fetch, summarize, and save a URL as a note
+- add_comment: Add an AI-refined comment to a note
 
 Rules:
 - Answer in Korean. Be concise and friendly.
@@ -1244,7 +1420,13 @@ Rules:
 - If pre-search results are provided below, use them to answer. Use read_note to get full details if needed.
 - If search finds related notes, reference them in your answer. Suggest relevant content, alternatives, or related items from the notes.
 - When adding items, default to today's date unless specified.
-- Keep responses short — max 3-4 sentences for simple questions.${preSearchContext}`;
+- Keep responses short — max 3-4 sentences for simple questions.
+- You can now delete notes, toggle/delete todos, summarize individual notes, process URLs, and add comments to notes.
+- When the user says "이거 삭제해줘" about a note, use delete_note.
+- When the user shares a URL, use process_url to save and summarize it.
+- When asked "이 노트 요약해줘", use summarize_note.
+- When the user wants to add a thought/comment about a note, use add_comment. The comment will be AI-refined and appended.
+- When the user asks you to explain a feature or what you can do, provide examples with each feature explanation.${preSearchContext}`;
 
   const contents = buildContents(history, message);
   const MAX_TOOL_ROUNDS = 3;
@@ -1258,20 +1440,17 @@ Rules:
 
       let geminiRes;
       try {
-        geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal: controller.signal,
-            body: JSON.stringify({
-              system_instruction: { parts: [{ text: systemPrompt }] },
-              contents: currentContents,
-              tools: [{ function_declarations: JARVIS_TOOLS }],
-              generationConfig: { temperature: 0.3 }
-            })
-          }
-        );
+        geminiRes = await fetch(getGeminiApiUrl('pro'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: systemPrompt }] },
+            contents: currentContents,
+            tools: [{ function_declarations: JARVIS_TOOLS }],
+            generationConfig: { temperature: 0.3, maxOutputTokens: 8192 }
+          })
+        });
       } finally {
         clearTimeout(timeout);
       }
@@ -1716,21 +1895,44 @@ function getAllMdFiles(dir, fileList) {
   return fileList;
 }
 
+// filterType: '_voice.md' | '_image.md' | '_url.md' | '_memo.md' | '_todo.md'
+// filterDate: 7 | 30 | 90 (days)
 app.get('/api/search', (req, res) => {
   const q = (req.query.q || '').trim().toLowerCase();
   const scope = req.query.scope || 'daily'; // 'daily' or 'all'
+  const filterType = req.query.filterType || '';
+  const filterDate = parseInt(req.query.filterDate) || 0;
   if (!q) return res.status(400).json({ error: 'Query required' });
 
   let allFiles;
   if (scope === 'all') {
     allFiles = getAllMdFilesCached();
   } else {
-    // VaultVoice notes only (NOTES_DIR)
     if (!fs.existsSync(NOTES_DIR)) return res.json({ results: [], query: q, total: 0 });
     allFiles = fs.readdirSync(NOTES_DIR)
       .filter(f => f.endsWith('.md'))
       .map(f => path.join(NOTES_DIR, f));
   }
+
+  // Apply filterDate: keep only files whose filename date is within N days
+  if (filterDate > 0) {
+    const cutoff = new Date(Date.now() - filterDate * 86400000).toISOString().slice(0, 10);
+    allFiles = allFiles.filter(f => {
+      const m = path.basename(f).match(/^(\d{4}-\d{2}-\d{2})/);
+      return m ? m[1] >= cutoff : true;
+    });
+  }
+
+  // Apply filterType: keep only files matching _type.md or type.md suffix
+  if (filterType) {
+    const suffix1 = `_${filterType}.md`;
+    const suffix2 = `${filterType}.md`;
+    allFiles = allFiles.filter(f => {
+      const base = path.basename(f);
+      return base.endsWith(suffix1) || base.endsWith(suffix2);
+    });
+  }
+
   const results = [];
   const MAX_RESULTS = 50;
 
@@ -1751,7 +1953,6 @@ app.get('/api/search', (req, res) => {
     }
 
     if (matches.length > 0) {
-      // Show relative path from vault root
       const relPath = path.relative(VAULT_PATH, filePath).replace(/\\/g, '/');
       const name = path.basename(filePath, '.md');
       results.push({ date: name, path: relPath, matches });
@@ -1778,17 +1979,14 @@ app.get('/api/search/ai', async (req, res) => {
 
   // Step 1: Ask Gemini to expand search keywords
   try {
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `사용자가 일일노트에서 "${q}"를 검색하려 합니다. 이 의도와 관련된 한국어 검색 키워드를 10~20개 생성하세요. 유의어, 관련어, 줄임말, 비슷한 표현을 포함하세요. JSON 배열로만 답변하세요. 예: ["키워드1", "키워드2"]` }] }],
-          generationConfig: { temperature: 0.3, maxOutputTokens: 256 }
-        })
-      }
-    );
+    const geminiRes = await fetch(getGeminiApiUrl('lite'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: `사용자가 일일노트에서 "${q}"를 검색하려 합니다. 이 의도와 관련된 한국어 검색 키워드를 10~20개 생성하세요. 유의어, 관련어, 줄임말, 비슷한 표현을 포함하세요. JSON 배열로만 답변하세요. 예: ["키워드1", "키워드2"]` }] }],
+        generationConfig: { temperature: 0.3, maxOutputTokens: 256 }
+      })
+    });
 
     let keywords = [q];
     if (geminiRes.ok) {
@@ -1994,6 +2192,9 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
   const allTags = ['vaultvoice', ...tags.filter(t => t !== 'vaultvoice')];
   const unique = [...new Set(allTags)];
 
+  // Insert wiki-links into body using title cache
+  const linkedEntry = insertWikiLinks(entry, filename);
+
   const fm = {
     '날짜': date,
     '시간': `"${timeDisplay}"`,
@@ -2003,11 +2204,28 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
     summary: '""',
     ...extraFrontmatter
   };
-  const body = `\n${entry}\n`;
+  const body = `\n${linkedEntry}\n`;
 
   const content = serializeFrontmatter(fm) + body;
   fs.writeFileSync(filePath, content, 'utf-8');
   invalidateFileCache();
+
+  // Async: generate title and inject into frontmatter (fire-and-forget)
+  if (GEMINI_API_KEY && GEMINI_API_KEY !== 'your_key_here') {
+    generateNoteTitle(linkedEntry).then(title => {
+      if (!title) return;
+      try {
+        const raw = fs.readFileSync(filePath, 'utf-8');
+        const { frontmatter: fm2 } = parseFrontmatter(raw);
+        if (!fm2.title) {
+          injectTitleToFrontmatter(filePath, raw, title);
+          titleCache[filename] = title;
+          console.log(`[Title] Generated for ${filename}: ${title}`);
+        }
+      } catch (e) { console.warn('[Title] Inject failed:', e.message); }
+    }).catch(() => {});
+  }
+
   return { created: true, filename };
 }
 
@@ -2426,13 +2644,7 @@ app.post('/api/process/audio', auth, uploadLimiter, upload.single('file'), async
     console.log('[Audio] Gemini file URI:', fileUri);
 
     // ── Step 2: Gemini transcription with structured output ───────────────
-    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    let model;
-    try {
-      model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-    } catch (e) {
-      model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-    }
+    const model = getGeminiModel('flash');
 
     const transcriptionSchema = {
       type: 'object',
@@ -2889,10 +3101,7 @@ app.post('/api/process/image', auth, aiLimiter, uploadLimiter, upload.single('fi
     const base64 = imageData.toString('base64');
     const mimeType = file.mimetype || 'image/jpeg';
 
-    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    let model;
-    try { model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' }); }
-    catch (e) { model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' }); }
+    const model = getGeminiModel('flash');
 
     const imageSchema = {
       type: 'object',
@@ -3081,10 +3290,7 @@ function extractOgMeta(html) {
 }
 
 async function summarizeWithGemini(text, url, meta) {
-  const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-  let model;
-  try { model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' }); }
-  catch (e) { model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' }); }
+  const model = getGeminiModel('pro');
 
   const isYouTube = /youtu\.?be/.test(url);
   const urlSchema = {
@@ -3102,7 +3308,7 @@ async function summarizeWithGemini(text, url, meta) {
     : `다음 웹페이지 내용을 한국어로 요약해주세요.\nURL: ${url}\n제목: ${meta.title || '(없음)'}\n\n내용:\n${text}\n\n반환:\n- title: 한국어 제목\n- summary: 핵심 내용 5~10문장 요약\n- key_points: 핵심 포인트 3~5개 (각 1문장)\n- keywords: 핵심 키워드 3~5개 (한국어)`;
   const result = await model.generateContent({
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    generationConfig: { responseMimeType: 'application/json', responseSchema: urlSchema, temperature: 0.2 }
+    generationConfig: { responseMimeType: 'application/json', responseSchema: urlSchema, temperature: 0.2, maxOutputTokens: 8192 }
   });
   return JSON.parse(result.response.text());
 }
@@ -3166,6 +3372,221 @@ app.post('/api/todo', auth, (req, res) => {
 });
 
 // ============================================================
+// Note: Summarize
+// ============================================================
+app.post('/api/note/summarize', auth, async (req, res) => {
+  const { filename } = req.body;
+  if (!filename) return res.status(400).json({ error: 'filename required' });
+  if (!filename || filename.includes('..') || filename.includes('/') || filename.includes('\\')) return res.status(400).json({ error: 'Invalid filename' });
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_key_here') return res.status(503).json({ error: 'Gemini API key not configured' });
+
+  const filePath = path.join(NOTES_DIR, filename);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Note not found' });
+
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const { body } = parseFrontmatter(raw);
+    const prompt = `다음 노트 내용을 3~5문장으로 한국어로 핵심 요약해주세요. 마크다운 없이 일반 텍스트로 답변하세요.\n\n${body.slice(0, 8000)}`;
+    const geminiRes = await fetch(getGeminiApiUrl('pro'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.5, maxOutputTokens: 4096 } })
+    });
+    if (!geminiRes.ok) return res.status(502).json({ error: 'Gemini API error' });
+    const data = await geminiRes.json();
+    const summary = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    res.json({ summary });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
+// Note: Delete
+// ============================================================
+app.post('/api/note/delete', auth, (req, res) => {
+  const { filename } = req.body;
+  if (!filename) return res.status(400).json({ error: 'filename required' });
+  if (!filename || filename.includes('..') || filename.includes('/') || filename.includes('\\')) return res.status(400).json({ error: 'Invalid filename' });
+
+  const filePath = path.join(NOTES_DIR, filename);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Note not found' });
+
+  try {
+    fs.unlinkSync(filePath);
+    invalidateFileCache();
+    // Remove from title cache
+    delete titleCache[filename];
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
+// Note: Add Comment
+// ============================================================
+app.post('/api/note/comment', auth, async (req, res) => {
+  const { filename, comment } = req.body;
+  if (!filename || !comment) return res.status(400).json({ error: 'filename and comment required' });
+  if (!filename || filename.includes('..') || filename.includes('/') || filename.includes('\\')) return res.status(400).json({ error: 'Invalid filename' });
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_key_here') return res.status(503).json({ error: 'Gemini API key not configured' });
+
+  const filePath = path.join(NOTES_DIR, filename);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Note not found' });
+
+  try {
+    const refined = await refineComment(comment);
+    appendCommentToNote(filePath, refined);
+    res.json({ success: true, refined });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+async function refineComment(comment) {
+  const prompt = `다음 사용자 코멘트를 맞춤법과 문장을 자연스럽게 다듬어줘. 의미는 절대 변경하지 마. 다듬은 텍스트만 출력하고 설명은 하지 마. 원문: ${comment}`;
+  const geminiRes = await fetch(getGeminiApiUrl('lite'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.3, maxOutputTokens: 256 } })
+  });
+  if (!geminiRes.ok) return comment; // fallback to original
+  const data = await geminiRes.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || comment;
+}
+
+function appendCommentToNote(filePath, refined) {
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  const now = new Date();
+  const dateStr = now.toISOString().slice(0, 16).replace('T', ' ');
+  const line = `- ${dateStr} — ${refined}`;
+  const hasSection = raw.includes('\n## 코멘트');
+  const updated = hasSection
+    ? raw + '\n' + line
+    : raw.trimEnd() + '\n\n## 코멘트\n\n' + line + '\n';
+  fs.writeFileSync(filePath, updated, 'utf-8');
+}
+
+// ============================================================
+// Note: Related
+// ============================================================
+app.post('/api/note/related', auth, async (req, res) => {
+  const { filename } = req.body;
+  if (!filename) return res.status(400).json({ error: 'filename required' });
+  if (!filename || filename.includes('..') || filename.includes('/') || filename.includes('\\')) return res.status(400).json({ error: 'Invalid filename' });
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_key_here') return res.status(503).json({ error: 'Gemini API key not configured' });
+
+  const filePath = path.join(NOTES_DIR, filename);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Note not found' });
+
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const { body } = parseFrontmatter(raw);
+    const keywords = await extractKeywords(body.slice(0, 3000));
+    if (!keywords.length) return res.json({ notes: [] });
+
+    const query = keywords.join(' ');
+    const searchResult = await executeSearch(query);
+    const lines = (searchResult.result || '').split('\n').filter(Boolean);
+    const notes = lines
+      .filter(l => !l.includes(filename))
+      .slice(0, 3)
+      .map(l => {
+        const m = l.match(/^\- \[([^\]]+)\]/);
+        const noteFilename = m ? path.basename(m[1]) : '';
+        const snippet = l.replace(/^\- \[[^\]]+\] \(관련도:\d+\) /, '').slice(0, 120);
+        return { filename: noteFilename, title: noteFilename.replace(/\.md$/, ''), snippet };
+      });
+    res.json({ notes });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+async function extractKeywords(text) {
+  try {
+    const prompt = `다음 텍스트에서 핵심 키워드 3~5개를 추출해줘. 쉼표로 구분된 키워드만 출력하고 설명은 하지 마.\n\n${text}`;
+    const geminiRes = await fetch(getGeminiApiUrl('lite'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.1, maxOutputTokens: 80 } }),
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!geminiRes.ok) return [];
+    const data = await geminiRes.json();
+    const t = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    return t.split(/[,，\n]+/).map(s => s.trim()).filter(s => s.length >= 2 && s.length <= 20);
+  } catch (e) {
+    return [];
+  }
+}
+
+// ============================================================
+// Notes: Backfill Titles
+// ============================================================
+app.post('/api/notes/backfill-titles', auth, async (req, res) => {
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_key_here') return res.status(503).json({ error: 'Gemini API key not configured' });
+  if (!fs.existsSync(NOTES_DIR)) return res.json({ updated: 0 });
+
+  try {
+    const files = fs.readdirSync(NOTES_DIR).filter(f => f.endsWith('.md'));
+    let updated = 0;
+    const targets = [];
+
+    for (const f of files) {
+      const raw = fs.readFileSync(path.join(NOTES_DIR, f), 'utf-8');
+      const { frontmatter } = parseFrontmatter(raw);
+      if (!frontmatter.title) targets.push(f);
+    }
+
+    const batch = targets.slice(0, 20);
+    for (const f of batch) {
+      try {
+        const raw = fs.readFileSync(path.join(NOTES_DIR, f), 'utf-8');
+        const title = await generateNoteTitle(raw);
+        if (title) {
+          injectTitleToFrontmatter(path.join(NOTES_DIR, f), raw, title);
+          titleCache[f] = title;
+          updated++;
+        }
+        await new Promise(r => setTimeout(r, 300)); // rate limit
+      } catch (e) { console.warn('[Backfill] Skip', f, e.message); }
+    }
+
+    res.json({ updated, remaining: targets.length - updated });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+async function generateNoteTitle(rawOrBody) {
+  const body = rawOrBody.startsWith('---') ? parseFrontmatter(rawOrBody).body : rawOrBody;
+  const prompt = `다음 노트 본문을 읽고 10~30자의 한줄 제목을 만들어줘. 제목만 출력: ${body.slice(0, 1500)}`;
+  try {
+    const geminiRes = await fetch(getGeminiApiUrl('lite'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.4, maxOutputTokens: 60 } }),
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!geminiRes.ok) return null;
+    const data = await geminiRes.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function injectTitleToFrontmatter(filePath, raw, title) {
+  const { frontmatter, body } = parseFrontmatter(raw);
+  frontmatter.title = title;
+  if (!frontmatter.aliases) frontmatter.aliases = [title];
+  else if (!frontmatter.aliases.includes(title)) frontmatter.aliases.push(title);
+  fs.writeFileSync(filePath, serializeFrontmatter(frontmatter) + body, 'utf-8');
+}
+
+// ============================================================
 // SPA fallback
 // ============================================================
 app.get('*', (req, res) => {
@@ -3204,6 +3625,12 @@ app.listen(PORT, '0.0.0.0', () => {
     const cached = getAllMdFilesCached();
     console.log(`  File cache: ${cached.length} .md files indexed`);
   } catch (e) { console.log('  File cache: warm-up failed -', e.message); }
+
+  // Pre-load title cache for wiki-link insertion
+  try {
+    loadTitleCache();
+    console.log(`  Title cache: ${Object.keys(titleCache).length} titles loaded`);
+  } catch (e) { console.log('  Title cache: warm-up failed -', e.message); }
 
   // Show LAN IP
   const os = require('os');

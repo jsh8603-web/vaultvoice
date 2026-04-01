@@ -143,7 +143,7 @@ function switchTab(name, btn) {
 
   if (name === 'feed') loadFeed();
   if (name === 'search') { loadHistoryFallback(); }
-  if (name === 'ai' && jarvisInput) jarvisInput.focus();
+  if (name === 'ai') { if (jarvisInput) jarvisInput.focus(); showOnboarding(); }
   if (name === 'settings') loadSettings();
 }
 
@@ -345,6 +345,10 @@ function procQueueRun() {
       next.status = 'done';
       if (navigator.vibrate) navigator.vibrate(50);
       feedDate = new Date();
+      // 음성/회의 전사 완료 후 일정 감지
+      if (next.type === 'audio' && d.transcription) {
+        detectCalendarEvent(d.transcription, new Date());
+      }
     } else {
       next.status = 'error';
       next.name += ' - ' + (d && d.error ? d.error : '오류');
@@ -546,10 +550,45 @@ function loadFeed() {
       el.innerHTML = renderFeedCards(notes);
       // Store notes for swipe navigation
       window._feedNotes = notes;
-      // Attach click events
+      // Attach click events (event delegation for action buttons)
       el.querySelectorAll('.feed-card').forEach(function (card) {
         card.style.cursor = 'pointer';
-        card.addEventListener('click', function () {
+        card.addEventListener('click', function (e) {
+          // Check if action button was clicked
+          var actionBtn = e.target.closest('.card-action-btn');
+          var commentSubmit = e.target.closest('[data-action="comment-submit"]');
+          var relatedLink = e.target.closest('.related-link');
+          if (actionBtn) {
+            e.stopPropagation();
+            var action = actionBtn.getAttribute('data-action');
+            var file = actionBtn.getAttribute('data-file');
+            if (action === 'summarize') {
+              handleCardSummarize(file, card);
+              var relatedEl = card.querySelector('.card-related');
+              if (relatedEl && !relatedEl.innerHTML) loadRelatedNotes(file, relatedEl);
+            } else if (action === 'comment') {
+              handleCardComment(file, card);
+            } else if (action === 'jarvis') {
+              handleCardJarvis(file);
+            } else if (action === 'delete') {
+              handleCardDelete(file);
+            }
+            return;
+          }
+          if (commentSubmit) {
+            e.stopPropagation();
+            var file2 = commentSubmit.getAttribute('data-file');
+            var textarea = card.querySelector('.card-comment-input textarea');
+            if (textarea) submitCardComment(file2, textarea.value, card);
+            return;
+          }
+          if (relatedLink) {
+            e.stopPropagation();
+            var relFile = relatedLink.getAttribute('data-file');
+            if (relFile) openNoteDetail(relFile);
+            return;
+          }
+          // Default: open note detail
           var fn = card.getAttribute('data-filename');
           if (fn) openNoteDetail(fn);
         });
@@ -571,7 +610,8 @@ function renderFeedCards(notes) {
     var tagHtml = tags.filter(function (t) { return t !== 'vaultvoice'; }).map(function (t) {
       return '<span class="card-tag">#' + esc(t) + '</span>';
     }).join('');
-    return '<div class="feed-card card-' + cardType + '" data-filename="' + esc(note.filename || '') + '">' +
+    var filename = esc(note.filename || '');
+    return '<div class="feed-card card-' + cardType + '" data-filename="' + filename + '">' +
       '<div class="card-header">' +
       '<span class="card-icon">' + typeIcon(cardType) + '</span>' +
       '<span style="font-size:14px;font-weight:600;color:var(--text)">' + esc(cardType) + '</span>' +
@@ -579,6 +619,18 @@ function renderFeedCards(notes) {
       '</div>' +
       '<div class="card-body">' + renderMd(preview) + '</div>' +
       (tagHtml ? '<div class="card-tags">' + tagHtml + '</div>' : '') +
+      '<div class="card-actions">' +
+      '<button class="card-action-btn" data-action="summarize" data-file="' + filename + '" title="AI 요약">✦</button>' +
+      '<button class="card-action-btn" data-action="comment" data-file="' + filename + '" title="코멘트">💬</button>' +
+      '<button class="card-action-btn" data-action="jarvis" data-file="' + filename + '" title="Jarvis로 열기">🤖</button>' +
+      '<button class="card-action-btn card-action-delete" data-action="delete" data-file="' + filename + '" title="삭제">🗑</button>' +
+      '</div>' +
+      '<div class="card-summary" style="display:none"></div>' +
+      '<div class="card-comment-input" style="display:none">' +
+      '<textarea placeholder="이 노트에 대한 소감..." rows="2"></textarea>' +
+      '<button class="btn-sm" data-action="comment-submit" data-file="' + filename + '">코멘트 추가</button>' +
+      '</div>' +
+      '<div class="card-related"></div>' +
       '</div>';
   }).join('');
 }
@@ -672,58 +724,68 @@ function toggleTodo(date, lineIndex, filename) {
 }
 
 // ============================================================
-// AI Summarization (Feed tab)
+// Card-level Actions (Feed tab)
 // ============================================================
-function doAI(action) {
-  var resultEl = document.getElementById('ai-result');
-  var buttons = document.querySelectorAll('.ai-btn');
-  buttons.forEach(function (b) { b.disabled = true; });
-  resultEl.style.display = '';
-  resultEl.innerHTML = '<div style="text-align:center;color:var(--text2)">AI 처리 중...</div>';
-
-  api('/feed/' + fmt(feedDate))
+function handleCardSummarize(filename, cardEl) {
+  var summaryDiv = cardEl.querySelector('.card-summary');
+  summaryDiv.style.display = 'block';
+  summaryDiv.textContent = '요약 중...';
+  api('/note/summarize', { method: 'POST', body: JSON.stringify({ filename: filename }) })
     .then(function (r) { return r.json(); })
-    .then(function (d) {
-      var notes = d.notes || [];
-      if (!notes.length) throw new Error('이 날 기록이 없습니다');
-      var combined = notes.map(function (n) { return n.body || ''; }).join('\n\n');
-      return api('/ai/summarize', {
-        method: 'POST',
-        body: JSON.stringify({ action: action, content: combined, date: fmt(feedDate) })
-      });
-    })
-    .then(function (r) {
-      if (!r.ok) throw new Error('AI 요청 실패');
-      return r.json();
-    })
-    .then(function (d) {
-      if (action === 'suggest-tags') {
-        var tags = d.result;
-        if (typeof tags === 'string') { try { tags = JSON.parse(tags); } catch (e) { tags = [tags]; } }
-        if (!Array.isArray(tags)) tags = [tags];
-        resultEl.innerHTML = '<h3>추천 태그</h3>' +
-          tags.map(function (t) {
-            return '<span class="ai-tag-chip" data-tag="' + esc(t) + '">' + esc(t) + '</span>';
-          }).join('');
-        resultEl.querySelectorAll('.ai-tag-chip').forEach(function (chip) {
-          chip.addEventListener('click', function () {
-            addTag(chip.getAttribute('data-tag'));
-            chip.style.background = 'var(--blue)';
-            chip.style.color = '#fff';
-          });
-        });
+    .then(function (data) { summaryDiv.textContent = data.summary || '요약 실패'; })
+    .catch(function () { summaryDiv.textContent = '요약 실패'; });
+}
+
+function handleCardDelete(filename) {
+  if (!confirm('이 노트를 삭제하시겠습니까?')) return;
+  api('/note/delete', { method: 'POST', body: JSON.stringify({ filename: filename }) })
+    .then(function (r) { if (r.ok) { showToast('노트가 삭제되었습니다', 'success'); loadFeed(); } })
+    .catch(function () { showToast('삭제 실패', 'error'); });
+}
+
+function handleCardComment(filename, cardEl) {
+  var inputDiv = cardEl.querySelector('.card-comment-input');
+  inputDiv.style.display = inputDiv.style.display === 'none' ? 'block' : 'none';
+}
+
+function submitCardComment(filename, comment, cardEl) {
+  if (!comment.trim()) return;
+  api('/note/comment', { method: 'POST', body: JSON.stringify({ filename: filename, comment: comment }) })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.success) {
+        var inputDiv = cardEl.querySelector('.card-comment-input');
+        inputDiv.style.display = 'none';
+        inputDiv.querySelector('textarea').value = '';
+        showToast('코멘트가 추가되었습니다', 'success');
       } else {
-        var text = d.result || '';
-        resultEl.innerHTML = '<h3>' + (action === 'summarize' ? 'AI 요약' : '주제별 분류') + '</h3>' +
-          '<div style="white-space:pre-wrap">' + esc(text) + '</div>';
+        showToast('코멘트 추가 실패', 'error');
       }
     })
-    .catch(function (e) {
-      resultEl.innerHTML = '<div style="color:var(--red)">' + esc(e.message) + '</div>';
+    .catch(function () { showToast('코멘트 추가 실패', 'error'); });
+}
+
+function handleCardJarvis(filename) {
+  switchTab('ai', document.querySelector('.tab-btn[data-tab="ai"]'));
+  var jarvisInputEl = document.getElementById('jarvis-input');
+  if (jarvisInputEl) {
+    jarvisInputEl.value = '노트 ' + filename + ' 에 대해 알려줘';
+    jarvisInputEl.focus();
+  }
+}
+
+function loadRelatedNotes(filename, containerEl) {
+  api('/note/related', { method: 'POST', body: JSON.stringify({ filename: filename }) })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.notes && data.notes.length > 0) {
+        containerEl.innerHTML = '<div class="related-notes"><span class="related-label">관련 노트</span>' +
+          data.notes.map(function (n) {
+            return '<a class="related-link" data-file="' + esc(n.filename) + '">' + esc(n.title || n.filename) + '</a>';
+          }).join('') + '</div>';
+      }
     })
-    .finally(function () {
-      buttons.forEach(function (b) { b.disabled = false; });
-    });
+    .catch(function () {});
 }
 
 // ============================================================
@@ -938,7 +1000,12 @@ function doSearch() {
   resultsEl.innerHTML = '<div class="empty" style="padding:16px">검색 중...</div>';
 
   var scope = document.getElementById('search-all-vault').checked ? 'all' : 'daily';
-  api('/search?q=' + encodeURIComponent(q) + '&scope=' + scope)
+  var filterType = (document.getElementById('filterType') && document.getElementById('filterType').value) || '';
+  var filterDate = (document.getElementById('filterDate') && document.getElementById('filterDate').value) || '';
+  var params = new URLSearchParams({ q: q, scope: scope });
+  if (filterType) params.append('filterType', filterType);
+  if (filterDate) params.append('filterDate', filterDate);
+  api('/search?' + params.toString())
     .then(function (r) { return r.json(); })
     .then(function (d) {
       if (!d.results || !d.results.length) {
@@ -1475,6 +1542,9 @@ function runFeatureTest() {
     checks.push({ name: '첨부파일 폴더', ok: d.attachmentDir.ok, detail: d.attachmentDir.ok ? 'OK' : '없음' });
     checks.push({ name: 'Gemini AI', ok: d.gemini.ok, detail: d.gemini.ok ? 'API 연결 OK' : (d.gemini.error || '실패') });
     checks.push({ name: '기존 노트', ok: d.notes.ok, detail: d.notes.count + '개 발견' });
+    if (d.geminiPro) checks.push({ name: 'Gemini Pro', ok: d.geminiPro.ok, detail: d.geminiPro.ok ? 'API 연결 OK' : (d.geminiPro.error || '실패') });
+    if (d.noteSummarize) checks.push({ name: '노트 요약 API', ok: d.noteSummarize.ok, detail: d.noteSummarize.ok ? 'OK' : '실패' });
+    if (d.noteComment) checks.push({ name: '노트 코멘트 API', ok: d.noteComment.ok, detail: d.noteComment.ok ? 'OK' : '실패' });
     renderTestResults(checks);
     btn.disabled = false;
     btn.textContent = '전체 기능 점검';
@@ -1560,6 +1630,44 @@ function initJarvis() {
     var bubble = e.target.closest('.jarvis-bubble-bot');
     if (bubble && jarvisTTSActive) stopTTS();
   });
+  // Onboarding buttons
+  document.querySelectorAll('.onboarding-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var prompt = this.getAttribute('data-prompt');
+      var input = document.getElementById('jarvis-input');
+      if (!input) return;
+      input.value = prompt;
+      input.focus();
+      hideOnboarding();
+      // URL 버튼은 자동 전송하지 않고 사용자가 URL 입력하게 함
+      if (!prompt.endsWith(': ')) {
+        sendJarvis(prompt);
+      } else {
+        input.setSelectionRange(prompt.length, prompt.length);
+      }
+    });
+  });
+  // Reset 시 온보딩 다시 표시
+  var origReset = jarvisReset.onclick;
+  jarvisReset.onclick = function () {
+    if (origReset) origReset();
+    showOnboarding();
+  };
+  // 초기 온보딩 상태
+  showOnboarding();
+}
+
+function hideOnboarding() {
+  var el = document.getElementById('jarvis-onboarding');
+  if (el) el.style.display = 'none';
+}
+
+function showOnboarding() {
+  var el = document.getElementById('jarvis-onboarding');
+  if (!el) return;
+  var chatMessages = document.querySelectorAll('.jarvis-bubble-user, .jarvis-bubble-bot');
+  if (chatMessages.length === 0) el.style.display = 'block';
+  else el.style.display = 'none';
 }
 
 function openJarvis() { switchTab('ai', document.querySelector('.tab-btn[data-tab="ai"]')); }
@@ -1575,6 +1683,7 @@ function sendJarvis(text) {
   if (!text || jarvisIsSending) return;
   jarvisIsSending = true;
   stopTTS();
+  hideOnboarding();
   var welcome = jarvisChat.querySelector('.jarvis-welcome');
   if (welcome) welcome.remove();
   addJarvisBubble(text, 'user');
@@ -1775,11 +1884,6 @@ document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('feedNext').addEventListener('click', function () { shiftFeedDate(1); });
   document.getElementById('feedDate').addEventListener('click', function () {
     feedDate = new Date(); updateFeedDate(); loadFeed();
-  });
-
-  // AI buttons
-  document.querySelectorAll('.ai-btn').forEach(function (btn) {
-    btn.addEventListener('click', function () { doAI(btn.getAttribute('data-action')); });
   });
 
   // ---- Search tab ----
