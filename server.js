@@ -877,49 +877,77 @@ async function executeToolCall(name, args) {
 // 3-tier search: 1) VaultVoice 2) Other user folders 3) System config (keyword-gated)
 function executeSearch(query) {
   if (!query) return { result: 'No query provided.' };
-  const q = query.toLowerCase();
-  const matches = [];
 
-  // Helper: search .md files in a directory (non-recursive for top-level control)
-  function searchDir(dir, maxResults) {
-    if (!fs.existsSync(dir)) return;
-    const files = getAllMdFiles(dir);
-    for (const f of files) {
-      if (matches.length >= maxResults) return;
-      try {
-        const content = fs.readFileSync(f, 'utf-8');
-        if (content.toLowerCase().includes(q)) {
-          const relPath = path.relative(VAULT_PATH, f);
-          const snippet = content.slice(0, 200).replace(/\n/g, ' ');
-          matches.push(`- [${relPath}] ${snippet}...`);
-        }
-      } catch (e) { /* skip */ }
-    }
-  }
+  // Split query into individual keywords for flexible OR matching
+  const keywords = query.toLowerCase().split(/[\s,;/]+/).filter(k => k.length >= 1);
+  if (!keywords.length) return { result: 'No query provided.' };
 
-  // Tier 1: VaultVoice notes
-  searchDir(NOTES_DIR, 5);
+  const scored = []; // { path, score, snippet }
 
-  // Tier 2: Other user folders (exclude system + VV + attachments)
-  if (matches.length < 5) {
+  function scoreFile(filePath) {
     try {
-      const topDirs = fs.readdirSync(VAULT_PATH);
-      for (const d of topDirs) {
-        if (matches.length >= 8) break;
-        if (SEARCH_EXCLUDE_DIRS.has(d) || d === SYSTEM_FOLDER || d === VV_BASE || d.startsWith('.')) continue;
-        const fullDir = path.join(VAULT_PATH, d);
-        try { if (!fs.statSync(fullDir).isDirectory()) continue; } catch (e) { continue; }
-        searchDir(fullDir, 8);
+      const content = fs.readFileSync(filePath, 'utf-8').toLowerCase();
+      let score = 0;
+
+      // Exact full query match (highest weight)
+      if (content.includes(query.toLowerCase())) score += 10;
+
+      // Individual keyword matches
+      for (const kw of keywords) {
+        if (kw.length < 2) continue; // skip single chars
+        const regex = new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+        const hits = (content.match(regex) || []).length;
+        if (hits > 0) score += Math.min(hits, 5); // cap per keyword
+      }
+
+      if (score > 0) {
+        const relPath = path.relative(VAULT_PATH, filePath);
+        // Extract a relevant snippet around the first keyword hit
+        let snippet = '';
+        for (const kw of keywords) {
+          if (kw.length < 2) continue;
+          const idx = content.indexOf(kw);
+          if (idx >= 0) {
+            const start = Math.max(0, idx - 40);
+            const end = Math.min(content.length, idx + 160);
+            snippet = content.slice(start, end).replace(/\n/g, ' ').trim();
+            break;
+          }
+        }
+        if (!snippet) snippet = content.slice(0, 200).replace(/\n/g, ' ');
+        scored.push({ path: relPath, score, snippet });
       }
     } catch (e) { /* skip */ }
   }
 
-  // Tier 3: System config (only if keywords match)
-  if (matches.length < 8 && SYSTEM_KEYWORDS.test(query)) {
-    searchDir(path.join(VAULT_PATH, SYSTEM_FOLDER), 8);
+  // Tier 1: VaultVoice notes
+  if (fs.existsSync(NOTES_DIR)) {
+    getAllMdFiles(NOTES_DIR).forEach(scoreFile);
   }
 
-  return { result: matches.length > 0 ? matches.join('\n\n') : '검색 결과가 없습니다.' };
+  // Tier 2: Other user folders
+  try {
+    const topDirs = fs.readdirSync(VAULT_PATH);
+    for (const d of topDirs) {
+      if (SEARCH_EXCLUDE_DIRS.has(d) || d === SYSTEM_FOLDER || d === VV_BASE || d.startsWith('.')) continue;
+      const fullDir = path.join(VAULT_PATH, d);
+      try { if (!fs.statSync(fullDir).isDirectory()) continue; } catch (e) { continue; }
+      getAllMdFiles(fullDir).forEach(scoreFile);
+    }
+  } catch (e) { /* skip */ }
+
+  // Tier 3: System config (keyword-gated)
+  if (SYSTEM_KEYWORDS.test(query)) {
+    const sysDir = path.join(VAULT_PATH, SYSTEM_FOLDER);
+    if (fs.existsSync(sysDir)) getAllMdFiles(sysDir).forEach(scoreFile);
+  }
+
+  // Sort by score descending, take top 8
+  scored.sort((a, b) => b.score - a.score);
+  const top = scored.slice(0, 8);
+
+  if (top.length === 0) return { result: '검색 결과가 없습니다.' };
+  return { result: top.map(m => `- [${m.path}] (관련도:${m.score}) ${m.snippet}...`).join('\n\n') };
 }
 
 function executeReadDailyNote(dateStr) {
