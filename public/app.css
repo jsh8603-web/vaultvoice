@@ -480,6 +480,21 @@ textarea.input { resize: vertical; min-height: 100px; line-height: 1.5; }
 }
 .note-detail-body details[open] summary { margin-bottom: 12px; }
 
+/* ============ Markdown Table → Cards ============ */
+.md-table-cards { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.md-table-card {
+  background: rgba(108,142,239,0.05); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px;
+}
+.md-table-card-title {
+  font-weight: 700; color: var(--accent); font-size: 14px; margin-bottom: 4px;
+}
+.md-table-card-meta {
+  display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--text2); line-height: 1.6;
+}
+.md-table-card-field { display: inline-block; }
+.md-table-card-label { color: var(--text2); opacity: 0.6; font-size: 11px; }
+
 /* ============ Settings ============ */
 .s-group {
   background: var(--bg-card); border-radius: var(--radius);

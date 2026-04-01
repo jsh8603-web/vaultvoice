@@ -1067,25 +1067,80 @@ function dismissEventBanner() {
 // ============================================================
 function renderMd(md) {
   if (!md) return '';
-  var h = esc(md);
-  h = h.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-  h = h.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-  h = h.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-  h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  h = h.replace(/\*(.+?)\*/g, '<em>$1</em>');
-  h = h.replace(/- \[x\] (.+)/g, '<li style="list-style:none"><input type="checkbox" checked disabled> <s>$1</s></li>');
-  h = h.replace(/- \[ \] (.+)/g, '<li style="list-style:none"><input type="checkbox" disabled> $1</li>');
-  h = h.replace(/^- (.+)$/gm, '<li>$1</li>');
-  h = h.replace(/!\[\[([^\]]+\.(webm|mp3|wav|m4a|ogg|mp4))\]\]/gi, function (match, p) {
-    var fname = p.split('/').pop();
-    return '<audio controls style="width:100%;margin:4px 0"><source src="/api/attachments/' + encodeURIComponent(fname) + '"></audio>';
+  // Process markdown tables before escaping (they contain | which we need)
+  var parts = md.split(/\n\n+/);
+  var processed = parts.map(function (block) {
+    var lines = block.trim().split('\n');
+    // Detect markdown table: at least 2 lines starting with |
+    if (lines.length >= 2 && lines[0].trim().charAt(0) === '|' && lines[1].trim().match(/^\|[\s:|-]+\|/)) {
+      return renderMdTable(lines);
+    }
+    // Detect details/summary HTML blocks — pass through without escaping
+    if (block.trim().match(/^<details/i)) {
+      return block.trim();
+    }
+    return null; // process normally
   });
-  h = h.replace(/!\[\[([^\]]+)\]\]/g, function (match, p) {
-    var fname = p.split('/').pop();
-    return '<img src="/api/attachments/' + encodeURIComponent(fname) + '" style="max-width:100%;border-radius:8px;margin:4px 0" alt="' + esc(fname) + '">';
-  });
-  h = h.replace(/\n\n+/g, '<br><br>');
+
+  var h = '';
+  var blockIdx = 0;
+  var splitBlocks = md.split(/\n\n+/);
+  for (var i = 0; i < splitBlocks.length; i++) {
+    if (processed[i] !== null) {
+      h += processed[i];
+    } else {
+      var seg = esc(splitBlocks[i]);
+      seg = seg.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+      seg = seg.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+      seg = seg.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+      seg = seg.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      seg = seg.replace(/\*(.+?)\*/g, '<em>$1</em>');
+      seg = seg.replace(/- \[x\] (.+)/g, '<li style="list-style:none"><input type="checkbox" checked disabled> <s>$1</s></li>');
+      seg = seg.replace(/- \[ \] (.+)/g, '<li style="list-style:none"><input type="checkbox" disabled> $1</li>');
+      seg = seg.replace(/^- (.+)$/gm, '<li>$1</li>');
+      seg = seg.replace(/!\[\[([^\]]+\.(webm|mp3|wav|m4a|ogg|mp4))\]\]/gi, function (match, p) {
+        var fname = p.split('/').pop();
+        return '<audio controls style="width:100%;margin:4px 0"><source src="/api/attachments/' + encodeURIComponent(fname) + '"></audio>';
+      });
+      seg = seg.replace(/!\[\[([^\]]+)\]\]/g, function (match, p) {
+        var fname = p.split('/').pop();
+        return '<img src="/api/attachments/' + encodeURIComponent(fname) + '" style="max-width:100%;border-radius:8px;margin:4px 0" alt="' + esc(fname) + '">';
+      });
+      h += seg;
+    }
+    if (i < splitBlocks.length - 1) h += '<br><br>';
+  }
   return h;
+}
+
+function renderMdTable(lines) {
+  // Parse header
+  var headers = lines[0].split('|').map(function (c) { return c.trim(); }).filter(Boolean);
+  // Skip separator line (line[1])
+  var rows = [];
+  for (var i = 2; i < lines.length; i++) {
+    if (!lines[i].trim() || lines[i].trim().charAt(0) !== '|') break;
+    var cells = lines[i].split('|').map(function (c) { return c.trim(); }).filter(Boolean);
+    rows.push(cells);
+  }
+  if (rows.length === 0) return esc(lines.join('\n'));
+
+  // Render as mobile-friendly card list
+  var html = '<div class="md-table-cards">';
+  rows.forEach(function (row) {
+    html += '<div class="md-table-card">';
+    // First column as card title
+    html += '<div class="md-table-card-title">' + esc(row[0] || '') + '</div>';
+    html += '<div class="md-table-card-meta">';
+    for (var j = 1; j < row.length && j < headers.length; j++) {
+      if (row[j]) {
+        html += '<span class="md-table-card-field"><span class="md-table-card-label">' + esc(headers[j]) + '</span> ' + esc(row[j]) + '</span>';
+      }
+    }
+    html += '</div></div>';
+  });
+  html += '</div>';
+  return html;
 }
 
 // ============================================================

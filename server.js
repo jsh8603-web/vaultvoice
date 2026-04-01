@@ -2973,6 +2973,8 @@ app.post('/api/process/image', auth, aiLimiter, uploadLimiter, upload.single('fi
 다음 정보를 JSON으로 반환하세요:
 1. image_type: 이미지 유형 (명함, 영수증, 화이트보드, 손글씨, 도표, 사진, 스크린샷 중 하나)
 2. ocr_text: 이미지에서 추출한 모든 텍스트 (없으면 빈 문자열)
+   - 중요: 이미지에 표/테이블이 포함된 경우, 반드시 Markdown 테이블 형식(| 열1 | 열2 | ... |)으로 변환하여 ocr_text에 포함하세요.
+   - 표 앞뒤의 일반 텍스트는 그대로 유지하세요.
 3. structured_data: 유형별 구조화 데이터
    - 명함: { name, company, phone, email, position }
    - 영수증: { date, total, items: [{name, price}], store }
