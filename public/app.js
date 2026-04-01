@@ -128,6 +128,7 @@ var tabTitles = {
   input: '입력',
   feed: '피드',
   search: '검색',
+  ai: 'AI',
   settings: '설정',
   vault: '관리'
 };
@@ -142,6 +143,7 @@ function switchTab(name, btn) {
 
   if (name === 'feed') loadFeed();
   if (name === 'search') { loadHistoryFallback(); }
+  if (name === 'ai' && jarvisInput) jarvisInput.focus();
   if (name === 'settings') loadSettings();
 }
 
@@ -1511,25 +1513,16 @@ function exportJarvisHistory() {
   URL.revokeObjectURL(a.href);
 }
 
-var jarvisBtn = document.createElement('button');
-jarvisBtn.id = 'jarvis-btn';
-jarvisBtn.className = 'jarvis-fab';
-jarvisBtn.innerHTML = 'J';
-jarvisBtn.onclick = openJarvis;
-document.body.appendChild(jarvisBtn);
-
-var jarvisOverlay, jarvisInput, jarvisMic, jarvisSend, jarvisChat, jarvisReset, jarvisStatus;
+var jarvisInput, jarvisMic, jarvisSend, jarvisChat, jarvisReset, jarvisStatus;
 
 function initJarvis() {
-  jarvisOverlay = document.getElementById('jarvis-overlay');
   jarvisInput = document.getElementById('jarvis-input');
   jarvisMic = document.getElementById('jarvis-mic');
   jarvisSend = document.getElementById('jarvis-send');
   jarvisChat = document.getElementById('jarvis-chat');
   jarvisReset = document.getElementById('jarvis-reset');
   jarvisStatus = document.getElementById('jarvis-status');
-  if (!jarvisOverlay) return;
-  document.getElementById('jarvis-close').onclick = closeJarvis;
+  if (!jarvisChat) return;
   jarvisSend.onclick = function () { sendJarvis(jarvisInput.value.trim()); };
   jarvisInput.onkeydown = function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendJarvis(jarvisInput.value.trim()); } };
   jarvisReset.onclick = function () { jarvisChatHistory = []; clearJarvisHistory(); jarvisChat.innerHTML = ''; addJarvisWelcome(); setJarvisStatus(''); };
@@ -1550,8 +1543,8 @@ function initJarvis() {
   });
 }
 
-function openJarvis() { if (jarvisOverlay) { jarvisOverlay.style.display = 'flex'; jarvisInput.focus(); } }
-function closeJarvis() { if (jarvisOverlay) { jarvisOverlay.style.display = 'none'; stopTTS(); } }
+function openJarvis() { switchTab('ai', document.querySelector('.tab-btn[data-tab="ai"]')); }
+function closeJarvis() { stopTTS(); }
 
 function addToJarvisHistory(role, text) {
   jarvisChatHistory.push({ role: role, text: text });

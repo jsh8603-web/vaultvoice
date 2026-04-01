@@ -266,8 +266,8 @@
             <p>계정을 연결하면 일정 조회·추가가 가능합니다. 메모 저장 시 자동으로 일정을 감지하여 캘린더에 추가할 수 있습니다.</p>
           </div>
           <div class="help-item">
-            <strong>Jarvis (AI 어시스턴트)</strong>
-            <p>우측 하단 버튼을 눌러 AI 채팅을 시작합니다. 내 노트를 기반으로 질문에 답하고 작업을 도와줍니다.</p>
+            <strong>AI (Jarvis)</strong>
+            <p>하단 AI 탭에서 채팅을 시작합니다. 내 노트를 검색하고 질문에 답하며, 할일·메모 추가, 일정 관리를 도와줍니다.</p>
           </div>
         </div>
       </div>
@@ -276,6 +276,38 @@
         <button class="btn-danger" id="logout-btn">로그아웃</button>
       </div>
       <div class="ver">VaultVoice v3.0</div>
+    </section>
+
+    <!-- AI 탭 (Jarvis) -->
+    <section id="p-ai" class="tab-panel">
+      <div class="jarvis-container jarvis-embedded">
+        <div class="jarvis-header">
+          <div class="jarvis-header-left">
+            <span id="jarvis-status" class="jarvis-status"></span>
+          </div>
+          <div class="jarvis-header-right">
+            <button id="jarvis-export" class="jarvis-header-btn" title="대화 내보내기"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
+            <button id="jarvis-reset" class="jarvis-header-btn" title="대화 초기화"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
+          </div>
+        </div>
+        <div id="jarvis-chat" class="jarvis-chat">
+          <div class="jarvis-welcome">
+            <div class="jarvis-welcome-icon"><svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="var(--accent)" stroke-width="1.5"><path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1.17A7 7 0 0 1 14 23h-4a7 7 0 0 1-6.83-4H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2z"/><circle cx="9" cy="14" r="1.5"/><circle cx="15" cy="14" r="1.5"/></svg></div>
+            <div class="jarvis-welcome-text">무엇을 도와드릴까요?</div>
+            <div class="jarvis-welcome-hints">
+              <button class="jarvis-hint" data-msg="오늘 메모 보여줘">오늘 메모 보기</button>
+              <button class="jarvis-hint" data-msg="할일 추가: 보고서 작성">할일 추가</button>
+              <button class="jarvis-hint" data-msg="이번 주 일정 알려줘">이번 주 일정</button>
+              <button class="jarvis-hint" data-msg="최근 노트 보여줘">최근 노트</button>
+            </div>
+          </div>
+        </div>
+        <div class="jarvis-input-area">
+          <input type="text" id="jarvis-input" class="jarvis-input" placeholder="메시지 입력..." autocomplete="off">
+          <button id="jarvis-send" class="jarvis-send-btn" title="전송"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
+          <button id="jarvis-mic" class="jarvis-mic-btn" title="음성 입력"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
+        </div>
+      </div>
     </section>
 
     <!-- 관리 탭 (vault.html로 이동) -->
@@ -306,6 +338,10 @@
     <button class="tab-btn" data-tab="search">
       <svg class="tab-svg" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       <span class="tab-label">검색</span>
+    </button>
+    <button class="tab-btn" data-tab="ai">
+      <svg class="tab-svg" viewBox="0 0 24 24"><path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1.17A7 7 0 0 1 14 23h-4a7 7 0 0 1-6.83-4H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2z"/><circle cx="9" cy="14" r="1.5"/><circle cx="15" cy="14" r="1.5"/></svg>
+      <span class="tab-label">AI</span>
     </button>
     <button class="tab-btn" data-tab="settings">
       <svg class="tab-svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -346,39 +382,8 @@
   </div>
 </div>
 
-<!-- Jarvis Chat Overlay -->
-<div id="jarvis-overlay" class="jarvis-overlay" style="display:none">
-  <div class="jarvis-container">
-    <div class="jarvis-header">
-      <div class="jarvis-header-left">
-        <h2 class="jarvis-title">Jarvis</h2>
-        <span id="jarvis-status" class="jarvis-status"></span>
-      </div>
-      <div class="jarvis-header-right">
-        <button id="jarvis-export" class="jarvis-header-btn" title="대화 내보내기"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
-        <button id="jarvis-reset" class="jarvis-header-btn" title="대화 초기화"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
-        <button id="jarvis-close" class="jarvis-header-btn" title="닫기">&times;</button>
-      </div>
-    </div>
-    <div id="jarvis-chat" class="jarvis-chat">
-      <div class="jarvis-welcome">
-        <div class="jarvis-welcome-icon">J</div>
-        <div class="jarvis-welcome-text">안녕하세요! Jarvis입니다.<br>무엇을 도와드릴까요?</div>
-        <div class="jarvis-welcome-hints">
-          <button class="jarvis-hint" data-msg="오늘 메모 보여줘">오늘 메모 보기</button>
-          <button class="jarvis-hint" data-msg="할일 추가: 보고서 작성">할일 추가</button>
-          <button class="jarvis-hint" data-msg="이번 주 일정 알려줘">이번 주 일정</button>
-          <button class="jarvis-hint" data-msg="볼트에서 회의록 검색해줘">볼트 검색</button>
-        </div>
-      </div>
-    </div>
-    <div class="jarvis-input-area">
-      <input type="text" id="jarvis-input" class="jarvis-input" placeholder="메시지 입력..." autocomplete="off">
-      <button id="jarvis-send" class="jarvis-send-btn" title="전송"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
-      <button id="jarvis-mic" class="jarvis-mic-btn" title="음성 입력"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
-    </div>
-  </div>
-</div>
+<!-- Jarvis (kept for backward compat, now embedded in AI tab) -->
+<div id="jarvis-overlay" style="display:none"></div>
 
 <script>
 // Force SW update on every page load (inline, cache-proof)
