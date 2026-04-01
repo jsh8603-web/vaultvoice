@@ -859,7 +859,7 @@ async function obsidianApi(method, endpoint, body) {
 // Execute a single tool call
 async function executeToolCall(name, args) {
   switch (name) {
-    case 'search': return executeSearch(args.query);
+    case 'search': return await executeSearch(args.query);
     case 'read_daily_note': return executeReadDailyNote(args.date);
     case 'read_note': return executeReadNote(args);
     case 'add_todo': return executeAddTodo(args);
@@ -874,12 +874,41 @@ async function executeToolCall(name, args) {
   }
 }
 
+// Expand query keywords using Gemini for synonym/related term matching
+async function expandKeywords(query) {
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: `"${query}"와 관련된 검색 키워드를 5개 생성해줘. 유의어, 관련어, 줄임말, 영어 포함. 쉼표로 구분된 키워드만 출력. 설명 없이.` }] }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 100 }
+        }),
+        signal: AbortSignal.timeout(5000)
+      }
+    );
+    const data = await res.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const expanded = text.split(/[,，\n]+/).map(s => s.trim().toLowerCase()).filter(s => s.length >= 2 && s.length <= 20);
+    console.log(`[Search] Keyword expansion: "${query}" → [${expanded.join(', ')}]`);
+    return expanded;
+  } catch (e) {
+    console.error('[Search] Keyword expansion failed:', e.message);
+    return [];
+  }
+}
+
 // 3-tier search: 1) VaultVoice 2) Other user folders 3) System config (keyword-gated)
-function executeSearch(query) {
+async function executeSearch(query) {
   if (!query) return { result: 'No query provided.' };
 
-  // Split query into individual keywords for flexible OR matching
-  const keywords = query.toLowerCase().split(/[\s,;/]+/).filter(k => k.length >= 1);
+  // Split query into keywords + expand with Gemini synonyms
+  const baseKeywords = query.toLowerCase().split(/[\s,;/]+/).filter(k => k.length >= 1);
+  const expanded = await expandKeywords(query);
+  const keywords = [...new Set([...baseKeywords, ...expanded])];
+  console.log(`[Search] Final keywords: [${keywords.join(', ')}]`);
   if (!keywords.length) return { result: 'No query provided.' };
 
   const scored = []; // { path, score, snippet }
