@@ -1,5 +1,5 @@
 // VaultVoice Service Worker v2
-const CACHE_NAME = 'vaultvoice-v2.3';
+const CACHE_NAME = 'vaultvoice-v3.0';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
