@@ -302,25 +302,82 @@ function detectUrl() {
 }
 
 // Save
+// ── Processing Queue ──
+var procQueue = [];
+var procRunning = false;
+
+function procQueueAdd(item) {
+  item.id = Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+  item.status = 'uploading';
+  procQueue.push(item);
+  procQueueRender();
+  procQueueRun();
+}
+
+function procQueueRender() {
+  var el = document.getElementById('proc-queue');
+  var active = procQueue.filter(function (q) { return q.status !== 'removed'; });
+  if (!active.length) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.innerHTML = active.map(function (q) {
+    var icon = q.type === 'audio' ? '\uD83C\uDFA4' : q.type === 'image' ? '\uD83D\uDCF7' : q.type === 'url' ? '\uD83D\uDD17' : '\uD83D\uDCDD';
+    var label = { uploading: '업로드중', processing: '처리중', done: '완료', error: '실패' }[q.status] || '';
+    return '<div class="proc-item" data-id="' + q.id + '">' +
+      '<span class="proc-icon">' + icon + '</span>' +
+      '<span class="proc-name">' + esc(q.name) + '</span>' +
+      '<span class="proc-status ' + q.status + '">' + label + '</span>' +
+      '</div>';
+  }).join('');
+}
+
+function procQueueRun() {
+  if (procRunning) return;
+  var next = procQueue.find(function (q) { return q.status === 'uploading'; });
+  if (!next) return;
+  procRunning = true;
+  next.status = 'processing';
+  procQueueRender();
+
+  next.sendFn().then(function (d) {
+    if (d && (d.success || d.filename || d.ok !== false)) {
+      next.status = 'done';
+      if (navigator.vibrate) navigator.vibrate(50);
+      feedDate = new Date();
+    } else {
+      next.status = 'error';
+      next.name += ' - ' + (d && d.error ? d.error : '오류');
+    }
+  }).catch(function (e) {
+    next.status = 'error';
+    next.name += ' - ' + e.message;
+  }).then(function () {
+    procRunning = false;
+    procQueueRender();
+    // Auto-remove done items after 4s
+    if (next.status === 'done') {
+      setTimeout(function () {
+        next.status = 'removed';
+        procQueueRender();
+      }, 4000);
+    }
+    // Process next in queue
+    procQueueRun();
+  });
+}
+
 function handleSave() {
   var text = (document.getElementById('mainInput').value || '').trim();
   var tags = myTags.slice();
   var fb = document.getElementById('inputFeedback');
-  var btn = document.getElementById('btnSave');
 
   if (!text && !pendingImageFile && !pendingAudioBlob) {
     document.getElementById('mainInput').focus();
     return;
   }
 
-  btn.disabled = true;
-  btn.textContent = '저장 중...';
-  fb.style.display = 'none';
-
-  var promise;
+  var queueItem;
 
   if (pendingAudioBlob) {
-    // Atomic: POST /api/process/audio
     var ext = '.webm';
     if (pendingAudioBlob.type && pendingAudioBlob.type.includes('mp4')) ext = '.mp4';
     var fd = new FormData();
@@ -328,56 +385,78 @@ function handleSave() {
     fd.append('tags', JSON.stringify(tags));
     fd.append('type', audioType);
     if (text) fd.append('memo', text);
-    promise = apiUpload('/process/audio', fd).then(function (r) { return r.json(); });
+    var blob = pendingAudioBlob; // capture ref
+    queueItem = {
+      type: 'audio', name: audioType === 'meeting' ? '회의 녹음' : '음성 메모',
+      sendFn: function () { return apiUpload('/process/audio', fd).then(function (r) { return r.json(); }); }
+    };
   } else if (pendingImageFile) {
-    // Atomic: POST /api/process/image
     var fd2 = new FormData();
     fd2.append('file', pendingImageFile.file, pendingImageFile.file.name || 'photo.jpg');
     fd2.append('tags', JSON.stringify(tags));
     if (text) fd2.append('memo', text);
-    promise = apiUpload('/process/image', fd2).then(function (r) { return r.json(); });
+    queueItem = {
+      type: 'image', name: pendingImageFile.file.name || '사진',
+      sendFn: function () { return apiUpload('/process/image', fd2).then(function (r) { return r.json(); }); }
+    };
   } else {
     var detectedUrl = detectUrl();
     if (detectedUrl) {
-      // Atomic: POST /api/process/url
-      promise = api('/process/url', {
-        method: 'POST',
-        body: JSON.stringify({ url: detectedUrl, tags: tags, memo: text !== detectedUrl ? text : '' })
-      }).then(function (r) { return r.json(); });
+      var urlText = text, urlTags = tags, urlDetected = detectedUrl;
+      queueItem = {
+        type: 'url', name: detectedUrl.substring(0, 40),
+        sendFn: function () {
+          return api('/process/url', {
+            method: 'POST',
+            body: JSON.stringify({ url: urlDetected, tags: urlTags, memo: urlText !== urlDetected ? urlText : '' })
+          }).then(function (r) { return r.json(); });
+        }
+      };
     } else {
-      // Atomic: POST /api/process/text
-      promise = api('/process/text', {
+      // Text notes are fast — process inline (no queue needed)
+      var btn = document.getElementById('btnSave');
+      btn.disabled = true;
+      btn.textContent = '저장 중...';
+      api('/process/text', {
         method: 'POST',
         body: JSON.stringify({ content: text, tags: tags })
-      }).then(function (r) { return r.json(); });
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        if (d && (d.success || d.filename || d.ok !== false)) {
+          fb.textContent = '저장 완료!';
+          fb.className = 'feedback ok';
+          fb.style.display = '';
+          if (navigator.vibrate) navigator.vibrate(50);
+          var savedText = text;
+          clearInput();
+          detectCalendarEvent(savedText, new Date());
+          feedDate = new Date();
+          setTimeout(function () { fb.style.display = 'none'; }, 3000);
+        } else {
+          fb.textContent = '저장 실패: ' + (d && d.error ? d.error : '알 수 없는 오류');
+          fb.className = 'feedback fail';
+          fb.style.display = '';
+        }
+      }).catch(function (e) {
+        fb.textContent = '실패: ' + e.message;
+        fb.className = 'feedback fail';
+        fb.style.display = '';
+      }).then(function () {
+        btn.disabled = false;
+        btn.textContent = '저장';
+      });
+      return;
     }
   }
 
-  promise.then(function (d) {
-    if (d && (d.success || d.filename || d.ok !== false)) {
-      fb.textContent = '저장 완료!';
-      fb.className = 'feedback ok';
-      fb.style.display = '';
-      if (navigator.vibrate) navigator.vibrate(50);
-      var savedText = text;
-      clearInput();
-      detectCalendarEvent(savedText, new Date());
-      setTimeout(function () { fb.style.display = 'none'; }, 3000);
-      // Refresh feed if on feed tab
-      feedDate = new Date();
-    } else {
-      fb.textContent = '저장 실패: ' + (d && d.error ? d.error : '알 수 없는 오류');
-      fb.className = 'feedback fail';
-      fb.style.display = '';
-    }
-  }).catch(function (e) {
-    fb.textContent = '실패: ' + e.message;
-    fb.className = 'feedback fail';
-    fb.style.display = '';
-  }).then(function () {
-    btn.disabled = false;
-    btn.textContent = '저장';
-  });
+  // Queue the item and immediately clear input
+  procQueueAdd(queueItem);
+  var savedText = text;
+  clearInput();
+  detectCalendarEvent(savedText, new Date());
+  fb.textContent = '전송 대기열에 추가됨';
+  fb.className = 'feedback ok';
+  fb.style.display = '';
+  setTimeout(function () { fb.style.display = 'none'; }, 2000);
 }
 
 // ============================================================
@@ -754,19 +833,21 @@ function setupNoteSwipe(card, overlay) {
     swiping = false;
     var threshold = 100;
 
-    if (dx < -threshold) {
-      // Left swipe → close
+    if (dx > threshold) {
+      // Right swipe → close (dismiss)
       card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
-      card.style.transform = 'translateX(-120%) rotate(-10deg)';
+      card.style.transform = 'translateX(120%) rotate(10deg)';
       card.style.opacity = '0';
       setTimeout(function () { closeNoteDetail(); }, 300);
-    } else if (dx > threshold) {
-      // Right swipe → next card
+    } else if (dx < -threshold) {
+      // Left swipe → next card
       var notes = window._feedNotes || [];
-      var nextIdx = (window._noteDetailIdx || 0) + 1;
+      var curIdx = window._noteDetailIdx;
+      if (curIdx < 0) curIdx = 0;
+      var nextIdx = curIdx + 1;
       if (nextIdx < notes.length) {
         card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
-        card.style.transform = 'translateX(120%) rotate(10deg)';
+        card.style.transform = 'translateX(-120%) rotate(-10deg)';
         card.style.opacity = '0';
         setTimeout(function () {
           openNoteDetail(notes[nextIdx].filename);
@@ -1148,13 +1229,19 @@ function renderMdTable(lines) {
   var html = '<div class="md-table-cards">';
   rows.forEach(function (row) {
     html += '<div class="md-table-card">';
-    // First column as card title
-    html += '<div class="md-table-card-title">' + esc(row[0] || '') + '</div>';
-    html += '<div class="md-table-card-meta">';
-    for (var j = 1; j < row.length && j < headers.length; j++) {
-      if (row[j]) {
-        html += '<span class="md-table-card-field"><span class="md-table-card-label">' + esc(headers[j]) + '</span> ' + esc(row[j]) + '</span>';
+    // Pick best title: first non-empty column with 2+ chars, fallback to first non-empty
+    var titleIdx = 0;
+    var titleText = row[0] || '';
+    if (titleText.length < 2) {
+      for (var t = 1; t < row.length; t++) {
+        if (row[t] && row[t].length >= 2) { titleIdx = t; titleText = row[t]; break; }
       }
+    }
+    html += '<div class="md-table-card-title">' + esc(titleText) + '</div>';
+    html += '<div class="md-table-card-meta">';
+    for (var j = 0; j < row.length && j < headers.length; j++) {
+      if (j === titleIdx || !row[j]) continue;
+      html += '<span class="md-table-card-field"><span class="md-table-card-label">' + esc(headers[j]) + '</span> ' + esc(row[j]) + '</span>';
     }
     html += '</div></div>';
   });

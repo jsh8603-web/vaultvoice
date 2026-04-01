@@ -704,8 +704,8 @@ app.post('/api/ai/analyze-image', async (req, res) => {
 // Tool definitions for Jarvis
 const JARVIS_TOOLS = [
   {
-    name: 'search_notes',
-    description: 'Search for notes in the vault using keywords.',
+    name: 'search',
+    description: 'Search notes in the vault. Searches VaultVoice notes first, then expands to other user folders. For coding rules/Claude/hook/guard topics, also searches system config.',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -716,13 +716,24 @@ const JARVIS_TOOLS = [
   },
   {
     name: 'read_daily_note',
-    description: 'Read the content of a specific daily note (YYYY-MM-DD). Use "today" for current date.',
+    description: 'Read all notes for a specific date (YYYY-MM-DD). Use "today" for current date.',
     parameters: {
       type: 'OBJECT',
       properties: {
         date: { type: 'STRING', description: 'Date in YYYY-MM-DD format, or "today"' }
       },
       required: ['date']
+    }
+  },
+  {
+    name: 'read_note',
+    description: 'Read a specific note by filename or path. For VaultVoice notes use filename only (e.g. "2026-04-01_093000_memo.md"). For vault notes use relative path.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        path: { type: 'STRING', description: 'Filename or path relative to vault root' }
+      },
+      required: ['path']
     }
   },
   {
@@ -775,90 +786,47 @@ const JARVIS_TOOLS = [
       required: ['title', 'startTime', 'endTime']
     }
   },
-  // --- New tools: Vault-wide operations via Obsidian REST API ---
-  {
-    name: 'search_vault',
-    description: 'Search the entire Obsidian vault using Obsidian native search. Returns matching notes with context. Use this for finding any note in the vault by content or filename.',
-    parameters: {
-      type: 'OBJECT',
-      properties: {
-        query: { type: 'STRING', description: 'Search query text' },
-        contextLength: { type: 'NUMBER', description: 'Characters of context around matches (default 100)' }
-      },
-      required: ['query']
-    }
-  },
-  {
-    name: 'read_note',
-    description: 'Read the content of any note in the vault by its path. Path is relative to vault root (e.g. "50.Work/meeting notes.md").',
-    parameters: {
-      type: 'OBJECT',
-      properties: {
-        path: { type: 'STRING', description: 'File path relative to vault root (e.g. "folder/note.md")' }
-      },
-      required: ['path']
-    }
-  },
   {
     name: 'create_note',
-    description: 'Create a new note in the vault. Content should be in Markdown format. Use [[wikilink]] format for links to other notes.',
+    description: 'Create a new note in VaultVoice (99_vaultvoice/). Content in Markdown with [[wikilink]] for links.',
     parameters: {
       type: 'OBJECT',
       properties: {
-        path: { type: 'STRING', description: 'File path relative to vault root (e.g. "00.inbox/new note.md")' },
-        content: { type: 'STRING', description: 'Markdown content for the note. Use [[Note Name]] for wikilinks.' }
+        title: { type: 'STRING', description: 'Note title (used as filename)' },
+        content: { type: 'STRING', description: 'Markdown content' },
+        tags: { type: 'ARRAY', items: { type: 'STRING' }, description: 'Tags for the note' }
       },
-      required: ['path', 'content']
-    }
-  },
-  {
-    name: 'delete_note',
-    description: 'Delete a note from the vault. IMPORTANT: Only call this when the user explicitly confirms deletion. Always ask for confirmation first.',
-    parameters: {
-      type: 'OBJECT',
-      properties: {
-        path: { type: 'STRING', description: 'File path relative to vault root' },
-        confirmed: { type: 'BOOLEAN', description: 'Must be true to proceed. Always ask user to confirm first.' }
-      },
-      required: ['path', 'confirmed']
-    }
-  },
-  {
-    name: 'append_to_note',
-    description: 'Append content to an existing note. Useful for adding links, sections, or content to any note in the vault.',
-    parameters: {
-      type: 'OBJECT',
-      properties: {
-        path: { type: 'STRING', description: 'File path relative to vault root' },
-        content: { type: 'STRING', description: 'Content to append. Use [[wikilink]] for links.' },
-        heading: { type: 'STRING', description: 'Optional: append under this heading' }
-      },
-      required: ['path', 'content']
+      required: ['title', 'content']
     }
   },
   {
     name: 'list_folder',
-    description: 'List files and subfolders in a vault folder. Path is relative to vault root (e.g. "50.Work" or "" for root).',
+    description: 'List files in a vault folder. Use "" for root, "99_vaultvoice" for VV notes, etc.',
     parameters: {
       type: 'OBJECT',
       properties: {
-        folder: { type: 'STRING', description: 'Folder path relative to vault root (e.g. "50.Work"). Use empty string for root.' }
+        folder: { type: 'STRING', description: 'Folder path relative to vault root. Empty string for root.' }
       },
       required: ['folder']
     }
   },
   {
-    name: 'run_obsidian_command',
-    description: 'Execute an Obsidian command by ID. Use this to trigger plugins like Claudian (Claude AI), templates, etc. Known commands: "claudian:open-view" (open Claude chat), "claudian:new-session" (new Claude session), "claudian:inline-edit" (inline edit).',
-    parameters: {
-      type: 'OBJECT',
-      properties: {
-        commandId: { type: 'STRING', description: 'The command ID (e.g. "claudian:open-view", "app:toggle-left-sidebar")' }
-      },
-      required: ['commandId']
-    }
+    name: 'get_tags',
+    description: 'Get all tags used in VaultVoice notes, sorted by frequency.',
+    parameters: { type: 'OBJECT', properties: {} }
+  },
+  {
+    name: 'get_recent_notes',
+    description: 'Get the most recent VaultVoice notes (last 7 days).',
+    parameters: { type: 'OBJECT', properties: {} }
   }
 ];
+
+// Folders excluded from general search (always)
+const SEARCH_EXCLUDE_DIRS = new Set(['.obsidian', '.claude', '90_Attachments', 'node_modules']);
+// System config folder — only searched when query matches these keywords
+const SYSTEM_FOLDER = '00_Claude_Control';
+const SYSTEM_KEYWORDS = /규칙|코딩|hook|guard|claude|패턴|스킬|메모리|설정|config|rule|pattern|agent|workflow|wf|프롬프트|prompt|감사|audit|스크립트|script|도구|tool|인덱스|index|템플릿|template|에이전트|자동화|automation|파이프라인|pipeline/i;
 
 // Resolve "today" to actual date
 function resolveDate(dateStr) {
@@ -890,77 +858,68 @@ async function obsidianApi(method, endpoint, body) {
 
 // Execute a single tool call
 async function executeToolCall(name, args) {
-  if (name === 'search_notes') {
-    return await executeSearchNotes(args.query);
-  } else if (name === 'read_daily_note') {
-    return executeReadDailyNote(args.date);
-  } else if (name === 'add_todo') {
-    return executeAddTodo(args);
-  } else if (name === 'add_memo') {
-    return executeAddMemo(args);
-  } else if (name === 'get_calendar_events') {
-    return await executeGetCalendarEvents(args);
-  } else if (name === 'add_calendar_event') {
-    return await executeAddCalendarEvent(args);
-  // --- New tools ---
-  } else if (name === 'search_vault') {
-    return await executeSearchVault(args);
-  } else if (name === 'read_note') {
-    return await executeReadNote(args);
-  } else if (name === 'create_note') {
-    return await executeCreateNote(args);
-  } else if (name === 'delete_note') {
-    return await executeDeleteNote(args);
-  } else if (name === 'append_to_note') {
-    return await executeAppendToNote(args);
-  } else if (name === 'list_folder') {
-    return await executeListFolder(args);
-  } else if (name === 'run_obsidian_command') {
-    return await executeObsidianCommand(args);
+  switch (name) {
+    case 'search': return executeSearch(args.query);
+    case 'read_daily_note': return executeReadDailyNote(args.date);
+    case 'read_note': return executeReadNote(args);
+    case 'add_todo': return executeAddTodo(args);
+    case 'add_memo': return executeAddMemo(args);
+    case 'get_calendar_events': return await executeGetCalendarEvents(args);
+    case 'add_calendar_event': return await executeAddCalendarEvent(args);
+    case 'create_note': return executeCreateNoteV2(args);
+    case 'list_folder': return executeListFolderV2(args);
+    case 'get_tags': return executeGetTags();
+    case 'get_recent_notes': return executeGetRecentNotes();
+    default: return { error: `Unknown tool: ${name}` };
   }
-  return { error: `Unknown tool: ${name}` };
 }
 
-async function executeSearchNotes(query) {
+// 3-tier search: 1) VaultVoice 2) Other user folders 3) System config (keyword-gated)
+function executeSearch(query) {
   if (!query) return { result: 'No query provided.' };
-  const q = query;
-
-  if (fs.existsSync(VECTOR_FILE)) {
-    try {
-      const queryVec = await getEmbedding(q);
-      if (queryVec) {
-        const vectorData = JSON.parse(fs.readFileSync(VECTOR_FILE, 'utf-8'));
-        const results = vectorData.map(item => ({
-          path: item.path,
-          score: cosineSimilarity(queryVec, item.vec)
-        }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 3);
-
-        if (results.length > 0) {
-          const snippets = results.map(r => {
-            const content = fs.readFileSync(path.join(VAULT_PATH, r.path), 'utf-8');
-            return `- [${r.path}] (Score: ${r.score.toFixed(2)})\n${content.slice(0, 300).replace(/\n/g, ' ')}...`;
-          });
-          return { result: snippets.join('\n\n') };
-        }
-      }
-    } catch (e) {
-      console.error('Vector search error:', e.message);
-    }
-  }
-
-  // Fallback: text search
-  const allFiles = getAllMdFiles(VAULT_PATH);
+  const q = query.toLowerCase();
   const matches = [];
-  for (const f of allFiles) {
-    if (matches.length >= 5) break;
-    const content = fs.readFileSync(f, 'utf-8');
-    if (content.toLowerCase().includes(q.toLowerCase())) {
-      matches.push(`- ${path.basename(f)}: ${content.slice(0, 100).replace(/\n/g, ' ')}...`);
+
+  // Helper: search .md files in a directory (non-recursive for top-level control)
+  function searchDir(dir, maxResults) {
+    if (!fs.existsSync(dir)) return;
+    const files = getAllMdFiles(dir);
+    for (const f of files) {
+      if (matches.length >= maxResults) return;
+      try {
+        const content = fs.readFileSync(f, 'utf-8');
+        if (content.toLowerCase().includes(q)) {
+          const relPath = path.relative(VAULT_PATH, f);
+          const snippet = content.slice(0, 200).replace(/\n/g, ' ');
+          matches.push(`- [${relPath}] ${snippet}...`);
+        }
+      } catch (e) { /* skip */ }
     }
   }
-  return { result: matches.length > 0 ? matches.join('\n') : 'No matches found.' };
+
+  // Tier 1: VaultVoice notes
+  searchDir(NOTES_DIR, 5);
+
+  // Tier 2: Other user folders (exclude system + VV + attachments)
+  if (matches.length < 5) {
+    try {
+      const topDirs = fs.readdirSync(VAULT_PATH);
+      for (const d of topDirs) {
+        if (matches.length >= 8) break;
+        if (SEARCH_EXCLUDE_DIRS.has(d) || d === SYSTEM_FOLDER || d === VV_BASE || d.startsWith('.')) continue;
+        const fullDir = path.join(VAULT_PATH, d);
+        try { if (!fs.statSync(fullDir).isDirectory()) continue; } catch (e) { continue; }
+        searchDir(fullDir, 8);
+      }
+    } catch (e) { /* skip */ }
+  }
+
+  // Tier 3: System config (only if keywords match)
+  if (matches.length < 8 && SYSTEM_KEYWORDS.test(query)) {
+    searchDir(path.join(VAULT_PATH, SYSTEM_FOLDER), 8);
+  }
+
+  return { result: matches.length > 0 ? matches.join('\n\n') : '검색 결과가 없습니다.' };
 }
 
 function executeReadDailyNote(dateStr) {
@@ -1043,220 +1002,103 @@ async function executeAddCalendarEvent(args) {
   }
 }
 
-// ---- New tool implementations (Obsidian REST API) ----
-
-async function executeSearchVault(args) {
-  if (!args.query) return { result: '검색어를 입력해주세요.' };
-
-  try {
-    const ctx = args.contextLength || 100;
-    const res = await obsidianApi('POST',
-      `/search/simple/?query=${encodeURIComponent(args.query)}&contextLength=${ctx}`,
-      args.query);
-    if (!res.ok) {
-      // Fallback to existing text search
-      return await executeSearchNotes(args.query);
-    }
-    const results = await res.json();
-
-    const top = results.slice(0, 5).map(r => {
-      const matches = (r.matches || []).slice(0, 2).map(m => {
-        const txt = (m.match && m.match.text) || m.context || '';
-        return txt.length > ctx ? txt.slice(0, ctx) + '...' : txt;
-      });
-      return `- [[${r.filename}]]\n  ${matches.join('\n  ')}`;
-    });
-
-    return { result: top.length > 0 ? top.join('\n\n') : '검색 결과가 없습니다.' };
-  } catch (e) {
-    console.error('[Jarvis] search_vault error:', e.message);
-    return await executeSearchNotes(args.query);
-  }
-}
-
-async function executeReadNote(args) {
+// ---- read_note (filesystem only) ----
+function executeReadNote(args) {
   if (!args.path) return { result: '파일 경로를 입력해주세요.' };
   if (args.path.includes('..')) return { result: '잘못된 경로입니다.' };
 
   const MAX_READ = 4000;
-  try {
-    const encodedPath = encodeURIComponent(args.path).replace(/%2F/g, '/');
-    const res = await obsidianApi('GET', `/vault/${encodedPath}`);
-    if (!res.ok) {
-      if (res.status === 404) return { result: `"${args.path}" 파일을 찾을 수 없습니다.` };
-      return { result: `파일 읽기 실패: HTTP ${res.status}` };
-    }
-    const content = await res.text();
-    const truncated = content.length > MAX_READ
-      ? content.slice(0, MAX_READ) + `\n\n... (총 ${content.length}자 중 처음 ${MAX_READ}자만 표시)`
-      : content;
-    return { result: truncated };
-  } catch (e) {
-    console.error('[Jarvis] read_note error:', e.message);
-    // Fallback to filesystem
+  // Try as VaultVoice filename first, then as vault-relative path
+  const candidates = [
+    path.join(NOTES_DIR, args.path),
+    path.join(VAULT_PATH, args.path)
+  ];
+  for (const fullPath of candidates) {
     try {
-      const fullPath = path.join(VAULT_PATH, args.path);
       if (fs.existsSync(fullPath)) {
         const content = fs.readFileSync(fullPath, 'utf-8');
-        return { result: content.slice(0, MAX_READ) };
+        const truncated = content.length > MAX_READ
+          ? content.slice(0, MAX_READ) + `\n\n... (총 ${content.length}자 중 ${MAX_READ}자만 표시)`
+          : content;
+        return { result: truncated };
       }
-    } catch (e2) { /* ignore */ }
-    return { result: '파일을 읽을 수 없습니다: ' + e.message };
+    } catch (e) { /* try next */ }
   }
+  return { result: `"${args.path}" 파일을 찾을 수 없습니다.` };
 }
 
-async function executeCreateNote(args) {
-  if (!args.path || !args.content) return { result: '경로와 내용이 필요합니다.' };
-  if (args.path.includes('..')) return { result: '잘못된 경로입니다.' };
-
-  const notePath = args.path.endsWith('.md') ? args.path : args.path + '.md';
-
-  try {
-    const encodedPath = encodeURIComponent(notePath).replace(/%2F/g, '/');
-    const res = await obsidianApi('PUT', `/vault/${encodedPath}`, args.content);
-    if (res.ok) {
-      return { result: `"${notePath}" 노트를 생성했습니다.` };
-    }
-    return { result: `노트 생성 실패: HTTP ${res.status}` };
-  } catch (e) {
-    console.error('[Jarvis] create_note error:', e.message);
-    // Fallback to filesystem
-    try {
-      const fullPath = path.join(VAULT_PATH, notePath);
-      const dir = path.dirname(fullPath);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(fullPath, args.content, 'utf-8');
-      return { result: `"${notePath}" 노트를 생성했습니다. (파일시스템)` };
-    } catch (e2) {
-      return { result: '노트 생성 실패: ' + e2.message };
-    }
-  }
+// ---- create_note (VaultVoice only, uses createAtomicNote) ----
+function executeCreateNoteV2(args) {
+  if (!args.title || !args.content) return { result: '제목과 내용이 필요합니다.' };
+  const date = new Date().toISOString().slice(0, 10);
+  const tags = args.tags || [];
+  const filename = createAtomicNote(date, 'memo', args.content, tags);
+  return { result: `"${filename}" 노트를 생성했습니다.` };
 }
 
-async function executeDeleteNote(args) {
-  if (!args.path) return { result: '삭제할 파일 경로를 입력해주세요.' };
-  if (args.path.includes('..')) return { result: '잘못된 경로입니다.' };
-
-  if (!args.confirmed) {
-    return { result: `"${args.path}" 파일을 정말 삭제하시겠습니까? "삭제 확인"이라고 답변해주세요.` };
-  }
-
-  try {
-    const encodedPath = encodeURIComponent(args.path).replace(/%2F/g, '/');
-    const res = await obsidianApi('DELETE', `/vault/${encodedPath}`);
-    if (res.ok) {
-      invalidateFileCache();
-      return { result: `"${args.path}" 파일을 삭제했습니다.` };
-    }
-    if (res.status === 404) return { result: `"${args.path}" 파일이 존재하지 않습니다.` };
-    return { result: `삭제 실패: HTTP ${res.status}` };
-  } catch (e) {
-    // Filesystem fallback
-    try {
-      const fullPath = path.join(VAULT_PATH, args.path);
-      if (fs.existsSync(fullPath)) {
-        fs.unlinkSync(fullPath);
-        invalidateFileCache();
-        return { result: `"${args.path}" 파일을 삭제했습니다. (파일시스템)` };
-      }
-      return { result: `"${args.path}" 파일이 존재하지 않습니다.` };
-    } catch (e2) {
-      return { result: '삭제 실패: ' + e2.message };
-    }
-  }
-}
-
-async function executeAppendToNote(args) {
-  if (!args.path || !args.content) return { result: '경로와 내용이 필요합니다.' };
-  if (args.path.includes('..')) return { result: '잘못된 경로입니다.' };
-
-  try {
-    const encodedPath = encodeURIComponent(args.path).replace(/%2F/g, '/');
-
-    // Read existing content then append
-    const readRes = await obsidianApi('GET', `/vault/${encodedPath}`);
-    if (!readRes.ok) return { result: `"${args.path}" 파일을 찾을 수 없습니다.` };
-    const existing = await readRes.text();
-    const updated = existing.trimEnd() + '\n\n' + args.content + '\n';
-    const writeRes = await obsidianApi('PUT', `/vault/${encodedPath}`, updated);
-    if (writeRes.ok) {
-      return { result: `"${args.path}"에 내용을 추가했습니다.` };
-    }
-    return { result: `내용 추가 실패: HTTP ${writeRes.status}` };
-  } catch (e) {
-    // Filesystem fallback
-    try {
-      const fullPath = path.join(VAULT_PATH, args.path);
-      if (fs.existsSync(fullPath)) {
-        const existing = fs.readFileSync(fullPath, 'utf-8');
-        const updated = existing.trimEnd() + '\n\n' + args.content + '\n';
-        fs.writeFileSync(fullPath, updated, 'utf-8');
-        return { result: `"${args.path}"에 내용을 추가했습니다. (파일시스템)` };
-      }
-      return { result: `"${args.path}" 파일을 찾을 수 없습니다.` };
-    } catch (e2) {
-      return { result: '내용 추가 실패: ' + e2.message };
-    }
-  }
-}
-
-async function executeListFolder(args) {
+// ---- list_folder (filesystem only) ----
+function executeListFolderV2(args) {
   const folder = (args.folder || '').replace(/\.\./g, '');
-
+  const dirPath = path.join(VAULT_PATH, folder);
   try {
-    const encodedPath = folder
-      ? encodeURIComponent(folder).replace(/%2F/g, '/') + '/'
-      : '';
-    const res = await obsidianApi('GET', `/vault/${encodedPath}`);
-    if (!res.ok) {
-      if (res.status === 404) return { result: `"${folder}" 폴더를 찾을 수 없습니다.` };
-      return { result: `폴더 조회 실패: HTTP ${res.status}` };
-    }
-    const data = await res.json();
-    const files = (data.files || []).slice(0, 30);
-    if (files.length === 0) return { result: '폴더가 비어있습니다.' };
-
-    const list = files.map(f => `- ${f}`).join('\n');
-    const suffix = (data.files || []).length > 30
-      ? `\n\n... (총 ${data.files.length}개 중 30개만 표시)`
-      : '';
-    return { result: list + suffix };
+    if (!fs.existsSync(dirPath)) return { result: `"${folder}" 폴더를 찾을 수 없습니다.` };
+    const items = fs.readdirSync(dirPath)
+      .filter(f => !f.startsWith('.') && !SEARCH_EXCLUDE_DIRS.has(f))
+      .slice(0, 30);
+    if (!items.length) return { result: '폴더가 비어있습니다.' };
+    const list = items.map(f => {
+      const stat = fs.statSync(path.join(dirPath, f));
+      return `- ${stat.isDirectory() ? '📁' : '📄'} ${f}`;
+    }).join('\n');
+    return { result: list };
   } catch (e) {
-    console.error('[Jarvis] list_folder error:', e.message);
-    // Fallback to filesystem
-    try {
-      const dirPath = path.join(VAULT_PATH, folder);
-      if (fs.existsSync(dirPath)) {
-        const items = fs.readdirSync(dirPath).filter(f => !f.startsWith('.')).slice(0, 30);
-        return { result: items.map(f => `- ${f}`).join('\n') || '폴더가 비어있습니다.' };
-      }
-    } catch (e2) { /* ignore */ }
     return { result: '폴더 조회 실패: ' + e.message };
   }
 }
 
-async function executeObsidianCommand(args) {
-  if (!args.commandId) return { result: '명령어 ID를 입력해주세요.' };
-
-  try {
-    const res = await obsidianApi('POST', '/commands/' + encodeURIComponent(args.commandId));
-    if (res.ok) {
-      return { result: `"${args.commandId}" 명령을 실행했습니다.` };
-    }
-    if (res.status === 404) {
-      return { result: `"${args.commandId}" 명령을 찾을 수 없습니다.` };
-    }
-    return { result: `명령 실행 실패: HTTP ${res.status}` };
-  } catch (e) {
-    return { result: 'Obsidian 연결 실패. Obsidian이 실행 중인지 확인해주세요: ' + e.message };
+// ---- get_tags ----
+function executeGetTags() {
+  const tagCount = {};
+  if (!fs.existsSync(NOTES_DIR)) return { result: '태그가 없습니다.' };
+  const files = fs.readdirSync(NOTES_DIR).filter(f => f.endsWith('.md'));
+  for (const f of files) {
+    try {
+      const raw = fs.readFileSync(path.join(NOTES_DIR, f), 'utf-8');
+      const { frontmatter } = parseFrontmatter(raw);
+      for (const t of (frontmatter.tags || [])) {
+        if (t !== 'vaultvoice') tagCount[t] = (tagCount[t] || 0) + 1;
+      }
+    } catch (e) { /* skip */ }
   }
+  const sorted = Object.entries(tagCount).sort((a, b) => b[1] - a[1]).slice(0, 20);
+  if (!sorted.length) return { result: '태그가 없습니다.' };
+  return { result: sorted.map(([tag, cnt]) => `#${tag} (${cnt})`).join(', ') };
+}
+
+// ---- get_recent_notes ----
+function executeGetRecentNotes() {
+  if (!fs.existsSync(NOTES_DIR)) return { result: '최근 노트가 없습니다.' };
+  const now = new Date();
+  const notes = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(now); d.setDate(d.getDate() - i);
+    const dateStr = d.toISOString().slice(0, 10);
+    const dayNotes = getNotesForDate(dateStr);
+    for (const n of dayNotes) {
+      const type = n.frontmatter['유형'] || 'memo';
+      const summary = (n.frontmatter.summary || n.body.slice(0, 80)).replace(/\n/g, ' ');
+      notes.push(`- [${dateStr}] (${type}) ${summary}`);
+    }
+  }
+  if (!notes.length) return { result: '최근 7일간 노트가 없습니다.' };
+  return { result: notes.slice(0, 20).join('\n') };
 }
 
 // Build Gemini conversation history from client history array
 function buildContents(history, currentMessage) {
   const contents = [];
   // Include up to 20 recent turns from history
-  const trimmed = (history || []).slice(-40); // 40 items = 20 user+model pairs max
+  const trimmed = (history || []).slice(-20); // 20 items = 10 user+model pairs max
   for (const msg of trimmed) {
     if (msg.role === 'user' || msg.role === 'model') {
       contents.push({ role: msg.role, parts: [{ text: msg.text }] });
@@ -1279,34 +1121,31 @@ app.post('/api/ai/chat', async (req, res) => {
   }
 
   const todayStr = new Date().toISOString().slice(0, 10);
-  const systemPrompt = `You are Jarvis, a powerful personal assistant for an Obsidian vault.
+  const systemPrompt = `You are Jarvis, a concise personal assistant for VaultVoice (Obsidian vault).
 Current Date: ${todayStr} (${getDayName(todayStr)})
 
+Vault structure:
+- 99_vaultvoice/ — VaultVoice atomic notes (date_time_type.md format)
+- 20_FPNA/, 80_Gmail/, gemini-scribe/ — user content folders
+- 00_Claude_Control/ — coding rules, hooks, patterns (search ONLY when asked about rules/config/automation)
+
 Available tools:
-- search_notes: Search notes by keyword (vector + text search, daily notes focused)
-- search_vault: Search the ENTIRE vault using Obsidian's native search
-- read_daily_note: Read a daily note (use "today" for today)
-- read_note: Read ANY note in the vault by path
-- create_note: Create a new note with Markdown content. Use [[wikilinks]] for links.
-- delete_note: Delete a note (ALWAYS ask for confirmation before deleting)
-- append_to_note: Add content to an existing note
-- list_folder: List files in a vault folder
-- add_todo: Add a todo item to a daily note
-- add_memo: Add a general memo to a daily note
-- get_calendar_events: Get Google Calendar events
-- add_calendar_event: Add a calendar event
-- run_obsidian_command: Execute Obsidian commands (e.g. open Claudian AI, templates)
+- search: Search notes (VV first → user folders → system config if topic matches)
+- read_daily_note: Read all notes for a date ("today" or YYYY-MM-DD)
+- read_note: Read a note by filename or path
+- add_todo: Add a todo item
+- add_memo: Add a memo
+- get_calendar_events / add_calendar_event: Google Calendar
+- create_note: Create a new VaultVoice note
+- list_folder: List files in a folder
+- get_tags: Get all VaultVoice tags
+- get_recent_notes: Get recent 7 days of notes
 
 Rules:
 - Answer in Korean. Be concise and friendly.
-- If the user asks a general question, answer directly without tools.
+- CRITICAL: For general conversation, opinions, recommendations, or knowledge questions, answer DIRECTLY without tools. Tools are ONLY for vault/calendar operations.
 - When adding items, default to today's date unless specified.
-- Use [[wikilink]] format when creating links between notes.
-- When creating notes, use proper Obsidian Markdown with frontmatter if appropriate.
-- For file deletion, ALWAYS ask for explicit confirmation before proceeding.
-- When the user mentions "Claudian" or "Claude", use run_obsidian_command with "claudian:open-view" or "claudian:new-session".
-- Use markdown formatting for better readability.
-- Keep responses concise. Vault file contents are truncated to 4000 characters.`;
+- Keep responses short — max 3-4 sentences for simple questions.`;
 
   const contents = buildContents(history, message);
   const MAX_TOOL_ROUNDS = 3;
@@ -1316,7 +1155,7 @@ Rules:
 
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
+      const timeout = setTimeout(() => controller.abort(), 30000);
 
       let geminiRes;
       try {
@@ -1764,7 +1603,7 @@ function getAllMdFiles(dir, fileList) {
   const items = fs.readdirSync(dir);
   for (const item of items) {
     // Skip hidden folders, node_modules, .git, etc.
-    if (item.startsWith('.') || item === 'node_modules') continue;
+    if (item.startsWith('.') || item === 'node_modules' || item === '00_Claude_Control') continue;
     const fullPath = path.join(dir, item);
     try {
       const stat = fs.statSync(fullPath);
@@ -2974,6 +2813,8 @@ app.post('/api/process/image', auth, aiLimiter, uploadLimiter, upload.single('fi
 1. image_type: 이미지 유형 (명함, 영수증, 화이트보드, 손글씨, 도표, 사진, 스크린샷 중 하나)
 2. ocr_text: 이미지에서 추출한 모든 텍스트 (없으면 빈 문자열)
    - 중요: 이미지에 표/테이블이 포함된 경우, 반드시 Markdown 테이블 형식(| 열1 | 열2 | ... |)으로 변환하여 ocr_text에 포함하세요.
+   - 세로로 병합된 셀(rowspan)이 있으면 각 행마다 해당 값을 반복 기입하세요. 빈 셀로 두지 마세요.
+   - 예: "스포츠강좌" 카테고리에 3개 항목이 있으면, 3행 모두 첫 열에 "스포츠강좌"를 넣으세요.
    - 표 앞뒤의 일반 텍스트는 그대로 유지하세요.
 3. structured_data: 유형별 구조화 데이터
    - 명함: { name, company, phone, email, position }
