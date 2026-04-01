@@ -3487,17 +3487,29 @@ app.post('/api/note/related', auth, async (req, res) => {
     if (!keywords.length) return res.json({ notes: [] });
 
     const query = keywords.join(' ');
-    const searchResult = await executeSearch(query);
-    const lines = (searchResult.result || '').split('\n').filter(Boolean);
-    const notes = lines
-      .filter(l => !l.includes(filename))
-      .slice(0, 3)
-      .map(l => {
-        const m = l.match(/^\- \[([^\]]+)\]/);
-        const noteFilename = m ? path.basename(m[1]) : '';
-        const snippet = l.replace(/^\- \[[^\]]+\] \(관련도:\d+\) /, '').slice(0, 120);
-        return { filename: noteFilename, title: noteFilename.replace(/\.md$/, ''), snippet };
-      });
+    // Search only VaultVoice notes (not entire vault)
+    const allFiles = fs.existsSync(NOTES_DIR) ? getAllMdFiles(NOTES_DIR) : [];
+    const scored = [];
+    for (const fp of allFiles) {
+      const base = path.basename(fp);
+      if (base === filename) continue;
+      try {
+        const content = fs.readFileSync(fp, 'utf-8').toLowerCase();
+        let score = 0;
+        for (const kw of keywords) {
+          if (kw.length < 2) continue;
+          const regex = new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+          const hits = (content.match(regex) || []).length;
+          if (hits > 0) score += Math.min(hits, 5);
+        }
+        if (score > 0) {
+          const { frontmatter } = parseFrontmatter(fs.readFileSync(fp, 'utf-8'));
+          scored.push({ filename: base, title: frontmatter.title || base.replace(/\.md$/, ''), score });
+        }
+      } catch (e) { /* skip */ }
+    }
+    scored.sort((a, b) => b.score - a.score);
+    const notes = scored.slice(0, 3).map(s => ({ filename: s.filename, title: s.title, snippet: '' }));
     res.json({ notes });
   } catch (e) {
     res.status(500).json({ error: e.message });
