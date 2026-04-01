@@ -678,7 +678,6 @@ function openNoteDetail(filename) {
   var tagsEl = document.getElementById('note-detail-tags');
   var indEl = document.getElementById('note-detail-indicator');
 
-  bodyEl.innerHTML = '<div class="empty">로딩 중...</div>';
   overlay.style.display = '';
   card.style.transform = '';
   card.style.opacity = '1';
@@ -697,19 +696,33 @@ function openNoteDetail(filename) {
     indEl.style.display = 'none';
   }
 
-  api('/note/' + encodeURIComponent(filename))
-    .then(function (r) { return r.json(); })
-    .then(function (d) {
-      var fm = d.frontmatter || {};
-      typeEl.textContent = typeIcon(fm['유형'] || 'memo');
-      timeEl.textContent = fm['시간'] || '';
-      bodyEl.innerHTML = renderMd(d.body || '');
-      var tags = (fm.tags || []).filter(function (t) { return t !== 'vaultvoice'; });
-      tagsEl.innerHTML = tags.map(function (t) {
-        return '<span class="card-tag">#' + esc(t) + '</span>';
-      }).join('');
-    })
-    .catch(function () { bodyEl.innerHTML = '<div class="empty">오류</div>'; });
+  // Use cached data from feed if available (instant load)
+  var cached = idx >= 0 ? notes[idx] : null;
+  if (cached && cached.body) {
+    var fm = cached.frontmatter || {};
+    typeEl.textContent = typeIcon(fm['유형'] || 'memo');
+    timeEl.textContent = fm['시간'] || '';
+    bodyEl.innerHTML = renderMd(cached.body);
+    var tags = (fm.tags || []).filter(function (t) { return t !== 'vaultvoice'; });
+    tagsEl.innerHTML = tags.map(function (t) {
+      return '<span class="card-tag">#' + esc(t) + '</span>';
+    }).join('');
+  } else {
+    bodyEl.innerHTML = '<div class="empty">로딩 중...</div>';
+    api('/note/' + encodeURIComponent(filename))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var fm = d.frontmatter || {};
+        typeEl.textContent = typeIcon(fm['유형'] || 'memo');
+        timeEl.textContent = fm['시간'] || '';
+        bodyEl.innerHTML = renderMd(d.body || '');
+        var tags = (fm.tags || []).filter(function (t) { return t !== 'vaultvoice'; });
+        tagsEl.innerHTML = tags.map(function (t) {
+          return '<span class="card-tag">#' + esc(t) + '</span>';
+        }).join('');
+      })
+      .catch(function () { bodyEl.innerHTML = '<div class="empty">오류</div>'; });
+  }
 
   // Swipe gesture setup
   setupNoteSwipe(card, overlay);
@@ -1533,19 +1546,11 @@ document.addEventListener('DOMContentLoaded', function () {
   });
 
   // ---- Input Hub ----
-  // Camera
-  var cameraInput = document.getElementById('cameraInput');
-  document.getElementById('btnCamera').addEventListener('click', function () { cameraInput.click(); });
-  cameraInput.addEventListener('change', function (e) {
+  // Photo (camera/gallery auto-switch on mobile)
+  var photoInput = document.getElementById('photoInput');
+  document.getElementById('btnPhoto').addEventListener('click', function () { photoInput.click(); });
+  photoInput.addEventListener('change', function (e) {
     handleImageCapture(e.target.files[0], 'photo');
-    e.target.value = '';
-  });
-
-  // Gallery
-  var galleryFileInput = document.getElementById('galleryFileInput');
-  document.getElementById('btnGallery').addEventListener('click', function () { galleryFileInput.click(); });
-  galleryFileInput.addEventListener('change', function (e) {
-    handleImageCapture(e.target.files[0], 'screenshot');
     e.target.value = '';
   });
 

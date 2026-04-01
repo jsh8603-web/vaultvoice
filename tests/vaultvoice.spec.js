@@ -142,17 +142,15 @@ test.describe('Input Tab', () => {
     await expect(page.locator('#mainInput')).toBeVisible();
   });
 
-  test('has action buttons (camera, gallery, record, file, url)', async ({ page }) => {
-    await expect(page.locator('#btnCamera')).toBeVisible();
-    await expect(page.locator('#btnGallery')).toBeVisible();
+  test('has action buttons (photo, record, file, url)', async ({ page }) => {
+    await expect(page.locator('#btnPhoto')).toBeVisible();
     await expect(page.locator('#btnRecord')).toBeVisible();
     await expect(page.locator('#btnFile')).toBeVisible();
     await expect(page.locator('#btnUrl')).toBeVisible();
   });
 
   test('has hidden file inputs', async ({ page }) => {
-    await expect(page.locator('#cameraInput')).toBeAttached();
-    await expect(page.locator('#galleryFileInput')).toBeAttached();
+    await expect(page.locator('#photoInput')).toBeAttached();
     await expect(page.locator('#fileInput')).toBeAttached();
   });
 

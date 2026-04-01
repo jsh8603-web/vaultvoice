@@ -2721,8 +2721,9 @@ If multiple speakers, distinguish by voice/tone/content and label as "화자1","
       }
     }
 
-    // ── Step 3.5: Transcript refinement (Gemini 2nd pass) ──────────────────
+    // ── Step 3.5: Transcript refinement + structured summary (2nd pass) ────
     let refinedTranscript = null;
+    let structuredSummary = null;
     const detectedLang = geminiResult?.language || 'ko';
     if (finalTranscript.length > 0) {
       try {
@@ -2732,47 +2733,114 @@ If multiple speakers, distinguish by voice/tone/content and label as "화자1","
           ? (isMeeting ? "존댓말 '~습니다/ㅂ니다'체로 통일" : "원문의 말투와 톤을 유지하되 필러만 제거")
           : (isMeeting ? "Use professional, formal tone" : "Maintain the original tone, only remove fillers");
 
+        const transcriptInput = JSON.stringify(finalTranscript.map(s => ({ speaker: s.speaker, text: s.text })));
+
         const refinePrompt = isKorean
-          ? `# 역할
-당신은 전문적인 회의록/메모 정리가입니다.
+          ? (isMeeting
+            ? `# 역할
+당신은 전문적인 회의록 작성 전문가이자 전사 정리가입니다.
 
 # 목표
-구어체로 전사된 내용을 읽기 좋게 정제합니다.
+1. 구어체로 전사된 내용을 읽기 좋은 문어체로 정제
+2. 회의록에서 바로 사용 가능한 구조화된 요약 작성
 
-# 단계별 처리 지침
+# 전사 정제 지침
 1. 필러("어", "음", "그", "이제", "그러니까") 및 군말 제거
 2. 반복된 어구 통합
 3. 끊어진 문장을 문법에 맞게 자연스럽게 연결
 4. 문맥에 맞는 구두점 추가
 5. ${toneRule}
 
+# 요약 작성 지침 (반드시 한국어로 작성)
+1. 주요 안건: 논의된 각 안건별 핵심 내용 정리
+2. 결정 사항: 회의에서 최종 결정된 사항
+3. 실행 과제(Action Items): 담당자와 기한 포함 (언급된 경우)
+4. 스크립트에 없는 내용은 추측하지 말 것
+
 # 제약 조건
 - 원문에 없는 새로운 정보를 추가 금지
 - 발언의 핵심 의미나 뉘앙스 왜곡 금지
 - 화자 정보 변경 금지
+- 출력 언어는 반드시 한국어
 
 # 원문
-${JSON.stringify(finalTranscript.map(s => ({ speaker: s.speaker, text: s.text })))}`
-          : `# Role
-You are a professional transcript editor.
+${transcriptInput}`
+            : `# 역할
+당신은 전문적인 메모 정리가입니다.
+
+# 목표
+1. 구어체로 전사된 내용을 읽기 좋게 정제
+2. 핵심 아이디어와 할 일을 정리한 요약 작성
+
+# 전사 정제 지침
+1. 필러("어", "음", "그", "이제", "그러니까") 및 군말 제거
+2. 반복된 어구 통합
+3. 끊어진 문장을 문법에 맞게 자연스럽게 연결
+4. ${toneRule}
+
+# 요약 작성 지침 (반드시 한국어로 작성)
+1. 핵심 아이디어: 메모의 주요 내용/컨셉 요약
+2. 할 일 목록: 실행 가능한 태스크 (있을 경우)
+3. 스크립트에 없는 내용은 추측하지 말 것
+
+# 제약 조건
+- 원문에 없는 새로운 정보를 추가 금지
+- 출력 언어는 반드시 한국어
+
+# 원문
+${transcriptInput}`)
+          : (isMeeting
+            ? `# Role
+You are a professional meeting secretary and transcript editor.
 
 # Goal
-Refine the raw speech-to-text transcript into clean, readable text.
+1. Refine the raw transcript into clean, readable text
+2. Generate a structured meeting summary ready for immediate use
 
-# Instructions
+# Transcript Refinement
 1. Remove fillers ("um", "uh", "like", "you know", "so")
 2. Merge repeated phrases
 3. Connect broken sentences naturally
 4. Add proper punctuation
 5. ${toneRule}
 
+# Summary Guidelines (MUST be in English)
+1. Key Agenda Items: core discussion points per topic
+2. Decisions Made: final decisions from the meeting
+3. Action Items: with owner and due date if mentioned
+4. Do NOT assume information not in the transcript
+
 # Constraints
 - Do NOT add information not in the original
 - Do NOT change the meaning or nuance
 - Do NOT change speaker labels
+- Output language MUST be English
 
 # Transcript
-${JSON.stringify(finalTranscript.map(s => ({ speaker: s.speaker, text: s.text })))}`;
+${transcriptInput}`
+            : `# Role
+You are a professional memo editor.
+
+# Goal
+1. Refine the raw transcript into clean, readable text
+2. Summarize key ideas and action items
+
+# Transcript Refinement
+1. Remove fillers ("um", "uh", "like", "you know", "so")
+2. Merge repeated phrases and connect broken sentences
+3. ${toneRule}
+
+# Summary Guidelines (MUST be in English)
+1. Key Ideas: main concepts from the memo
+2. To-Do: actionable tasks if any
+3. Do NOT assume information not in the transcript
+
+# Constraints
+- Do NOT add information not in the original
+- Output language MUST be English
+
+# Transcript
+${transcriptInput}`);
 
         const refineSchema = {
           type: 'object',
@@ -2787,9 +2855,10 @@ ${JSON.stringify(finalTranscript.map(s => ({ speaker: s.speaker, text: s.text })
                 },
                 required: ['speaker', 'text']
               }
-            }
+            },
+            summary: { type: 'string' }
           },
-          required: ['refined']
+          required: ['refined', 'summary']
         };
 
         const refineResult = await model.generateContent({
@@ -2797,7 +2866,7 @@ ${JSON.stringify(finalTranscript.map(s => ({ speaker: s.speaker, text: s.text })
           generationConfig: {
             responseMimeType: 'application/json',
             responseSchema: refineSchema,
-            temperature: 0.2,
+            temperature: 0.3,
             maxOutputTokens: 65536
           }
         });
@@ -2806,12 +2875,17 @@ ${JSON.stringify(finalTranscript.map(s => ({ speaker: s.speaker, text: s.text })
           refinedTranscript = refineData.refined;
           console.log('[Audio] Transcript refined OK, segments:', refinedTranscript.length);
         }
+        if (refineData.summary) {
+          structuredSummary = refineData.summary;
+          console.log('[Audio] Structured summary generated, length:', structuredSummary.length);
+        }
       } catch (refineErr) {
         console.warn('[Audio] Transcript refinement failed (using original):', refineErr.message);
       }
     }
 
     // ── Step 4: Build note body and save atomic note ──────────────────────
+    const finalSummary = structuredSummary || summary;
     const originalText = finalTranscript
       .map(s => `**${s.speaker}**: ${s.text}`)
       .join('\n\n');
@@ -2821,9 +2895,9 @@ ${JSON.stringify(finalTranscript.map(s => ({ speaker: s.speaker, text: s.text })
       const refinedText = refinedTranscript
         .map(s => `**${s.speaker}**: ${s.text}`)
         .join('\n\n');
-      body = `## 요약\n\n${summary}\n\n## 전사 (정리)\n\n${refinedText}\n\n<details><summary>원본 전사 확인</summary>\n\n${originalText}\n\n</details>`;
+      body = `## 요약\n\n${finalSummary}\n\n## 전사 (정리)\n\n${refinedText}\n\n<details><summary>원본 전사 확인</summary>\n\n${originalText}\n\n</details>`;
     } else {
-      body = `## 요약\n\n${summary}\n\n## 전사\n\n${originalText}`;
+      body = `## 요약\n\n${finalSummary}\n\n## 전사\n\n${originalText}`;
     }
 
     const extraFrontmatter = {
@@ -2843,7 +2917,7 @@ ${JSON.stringify(finalTranscript.map(s => ({ speaker: s.speaker, text: s.text })
       ok: true,
       filename: noteResult.filename,
       transcription: usedWhisper ? 'gemini+whisper' : 'gemini',
-      summary,
+      summary: finalSummary,
       speakers: participants
     });
 
