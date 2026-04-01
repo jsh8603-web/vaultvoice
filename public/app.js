@@ -463,6 +463,16 @@ function loadFeed() {
         return;
       }
       el.innerHTML = renderFeedCards(notes);
+      // Store notes for swipe navigation
+      window._feedNotes = notes;
+      // Attach click events
+      el.querySelectorAll('.feed-card').forEach(function (card) {
+        card.style.cursor = 'pointer';
+        card.addEventListener('click', function () {
+          var fn = card.getAttribute('data-filename');
+          if (fn) openNoteDetail(fn);
+        });
+      });
     })
     .catch(function (e) { el.innerHTML = '<div class="empty">오류: ' + e.message + '</div>'; });
 
@@ -480,7 +490,7 @@ function renderFeedCards(notes) {
     var tagHtml = tags.filter(function (t) { return t !== 'vaultvoice'; }).map(function (t) {
       return '<span class="card-tag">#' + esc(t) + '</span>';
     }).join('');
-    return '<div class="feed-card card-' + cardType + '">' +
+    return '<div class="feed-card card-' + cardType + '" data-filename="' + esc(note.filename || '') + '">' +
       '<div class="card-header">' +
       '<span class="card-icon">' + typeIcon(cardType) + '</span>' +
       '<span style="font-size:14px;font-weight:600;color:var(--text)">' + esc(cardType) + '</span>' +
@@ -657,6 +667,145 @@ function openPreview(date) {
 }
 
 function closePreview() { document.getElementById('hist-overlay').style.display = 'none'; }
+
+// ── Note Detail: swipeable card view ──
+function openNoteDetail(filename) {
+  var overlay = document.getElementById('note-detail-overlay');
+  var card = document.getElementById('note-detail-card');
+  var bodyEl = document.getElementById('note-detail-body');
+  var typeEl = document.getElementById('note-detail-type');
+  var timeEl = document.getElementById('note-detail-time');
+  var tagsEl = document.getElementById('note-detail-tags');
+  var indEl = document.getElementById('note-detail-indicator');
+
+  bodyEl.innerHTML = '<div class="empty">로딩 중...</div>';
+  overlay.style.display = '';
+  card.style.transform = '';
+  card.style.opacity = '1';
+  card.style.transition = '';
+
+  // Find current index in feed notes
+  var notes = window._feedNotes || [];
+  var idx = notes.findIndex(function (n) { return n.filename === filename; });
+  window._noteDetailIdx = idx;
+
+  // Show indicator
+  if (notes.length > 1 && idx >= 0) {
+    indEl.textContent = (idx + 1) + ' / ' + notes.length;
+    indEl.style.display = '';
+  } else {
+    indEl.style.display = 'none';
+  }
+
+  api('/note/' + encodeURIComponent(filename))
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      var fm = d.frontmatter || {};
+      typeEl.textContent = typeIcon(fm['유형'] || 'memo');
+      timeEl.textContent = fm['시간'] || '';
+      bodyEl.innerHTML = renderMd(d.body || '');
+      var tags = (fm.tags || []).filter(function (t) { return t !== 'vaultvoice'; });
+      tagsEl.innerHTML = tags.map(function (t) {
+        return '<span class="card-tag">#' + esc(t) + '</span>';
+      }).join('');
+    })
+    .catch(function () { bodyEl.innerHTML = '<div class="empty">오류</div>'; });
+
+  // Swipe gesture setup
+  setupNoteSwipe(card, overlay);
+}
+
+function setupNoteSwipe(card, overlay) {
+  var startX = 0, startY = 0, dx = 0, swiping = false;
+
+  function onStart(e) {
+    var touch = e.touches ? e.touches[0] : e;
+    startX = touch.clientX;
+    startY = touch.clientY;
+    dx = 0;
+    swiping = true;
+    card.style.transition = 'none';
+  }
+  function onMove(e) {
+    if (!swiping) return;
+    var touch = e.touches ? e.touches[0] : e;
+    dx = touch.clientX - startX;
+    var dy = Math.abs(touch.clientY - startY);
+    if (dy > Math.abs(dx) * 1.5) { swiping = false; card.style.transform = ''; return; }
+    if (Math.abs(dx) > 10) e.preventDefault();
+    card.style.transform = 'translateX(' + dx + 'px) rotate(' + (dx * 0.03) + 'deg)';
+    card.style.opacity = Math.max(0.3, 1 - Math.abs(dx) / 400);
+  }
+  function onEnd() {
+    if (!swiping) return;
+    swiping = false;
+    var threshold = 100;
+
+    if (dx < -threshold) {
+      // Left swipe → close
+      card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
+      card.style.transform = 'translateX(-120%) rotate(-10deg)';
+      card.style.opacity = '0';
+      setTimeout(function () { closeNoteDetail(); }, 300);
+    } else if (dx > threshold) {
+      // Right swipe → next card
+      var notes = window._feedNotes || [];
+      var nextIdx = (window._noteDetailIdx || 0) + 1;
+      if (nextIdx < notes.length) {
+        card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
+        card.style.transform = 'translateX(120%) rotate(10deg)';
+        card.style.opacity = '0';
+        setTimeout(function () {
+          openNoteDetail(notes[nextIdx].filename);
+        }, 300);
+      } else {
+        // Bounce back — no more cards
+        card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
+        card.style.transform = '';
+        card.style.opacity = '1';
+      }
+    } else {
+      // Bounce back
+      card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
+      card.style.transform = '';
+      card.style.opacity = '1';
+    }
+  }
+
+  // Remove old listeners
+  card._noteSwipeClean && card._noteSwipeClean();
+  card.addEventListener('touchstart', onStart, { passive: true });
+  card.addEventListener('touchmove', onMove, { passive: false });
+  card.addEventListener('touchend', onEnd);
+  card.addEventListener('mousedown', onStart);
+  card.addEventListener('mousemove', onMove);
+  card.addEventListener('mouseup', onEnd);
+  card._noteSwipeClean = function () {
+    card.removeEventListener('touchstart', onStart);
+    card.removeEventListener('touchmove', onMove);
+    card.removeEventListener('touchend', onEnd);
+    card.removeEventListener('mousedown', onStart);
+    card.removeEventListener('mousemove', onMove);
+    card.removeEventListener('mouseup', onEnd);
+  };
+}
+
+function closeNoteDetail() {
+  var overlay = document.getElementById('note-detail-overlay');
+  overlay.style.display = 'none';
+  var card = document.getElementById('note-detail-card');
+  card._noteSwipeClean && card._noteSwipeClean();
+}
+
+// Close on background tap
+document.addEventListener('DOMContentLoaded', function () {
+  var overlay = document.getElementById('note-detail-overlay');
+  if (overlay) {
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) closeNoteDetail();
+    });
+  }
+});
 
 function doSearch() {
   var q = (document.getElementById('searchInput').value || '').trim();

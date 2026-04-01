@@ -2522,24 +2522,26 @@ app.post('/api/process/audio', auth, uploadLimiter, upload.single('file'), async
             insufficient_content: { type: 'boolean' }
           },
           required: ['broken_sentences', 'unclear_ratio', 'repetition_detected', 'insufficient_content']
-        }
+        },
+        language: { type: 'string' }
       },
       required: ['summary', 'participants', 'transcript', 'quality_check']
     };
 
-    const prompt = `이 오디오 파일을 한국어로 전사해주세요.
+    const prompt = `Transcribe this audio file. Auto-detect the language (Korean, English, or mixed).
 
-다음 정보를 JSON으로 반환하세요:
-1. summary: 대화/발화의 핵심 내용을 2~3문장으로 요약
-2. participants: 화자 목록 (예: ["화자1", "화자2"] 또는 단독 발화면 ["화자1"])
-3. transcript: 타임스탬프(MM:SS), 화자, 발화 내용을 순서대로 기록
-4. quality_check: 품질 평가
-   - broken_sentences: 불완전하게 잘린 문장 목록 (최대 10개)
-   - unclear_ratio: 불명확한 발화 비율 (0.0~1.0)
-   - repetition_detected: 동일 내용 반복 여부
-   - insufficient_content: 의미있는 내용이 너무 적은지 여부
+Return JSON with:
+1. summary: 2-3 sentence summary of the conversation (in the detected language)
+2. participants: speaker list (e.g. ["화자1", "화자2"] for Korean, ["Speaker1", "Speaker2"] for English)
+3. transcript: timestamp(MM:SS), speaker, text in order
+4. quality_check:
+   - broken_sentences: list of incomplete sentences (max 10)
+   - unclear_ratio: ratio of unclear speech (0.0~1.0)
+   - repetition_detected: whether same content repeats
+   - insufficient_content: whether meaningful content is too little
+5. language: detected language code ("ko", "en", or "mixed")
 
-화자가 여럿이면 목소리/톤/내용으로 구분하여 "화자1", "화자2" 등으로 표기하세요.`;
+If multiple speakers, distinguish by voice/tone/content and label as "화자1","화자2" (Korean) or "Speaker1","Speaker2" (English).`;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 300000); // 5 min
@@ -2719,14 +2721,115 @@ app.post('/api/process/audio', auth, uploadLimiter, upload.single('file'), async
       }
     }
 
+    // ── Step 3.5: Transcript refinement (Gemini 2nd pass) ──────────────────
+    let refinedTranscript = null;
+    const detectedLang = geminiResult?.language || 'ko';
+    if (finalTranscript.length > 0) {
+      try {
+        const isKorean = detectedLang === 'ko' || detectedLang === 'mixed';
+        const isMeeting = participants.length > 1;
+        const toneRule = isKorean
+          ? (isMeeting ? "존댓말 '~습니다/ㅂ니다'체로 통일" : "원문의 말투와 톤을 유지하되 필러만 제거")
+          : (isMeeting ? "Use professional, formal tone" : "Maintain the original tone, only remove fillers");
+
+        const refinePrompt = isKorean
+          ? `# 역할
+당신은 전문적인 회의록/메모 정리가입니다.
+
+# 목표
+구어체로 전사된 내용을 읽기 좋게 정제합니다.
+
+# 단계별 처리 지침
+1. 필러("어", "음", "그", "이제", "그러니까") 및 군말 제거
+2. 반복된 어구 통합
+3. 끊어진 문장을 문법에 맞게 자연스럽게 연결
+4. 문맥에 맞는 구두점 추가
+5. ${toneRule}
+
+# 제약 조건
+- 원문에 없는 새로운 정보를 추가 금지
+- 발언의 핵심 의미나 뉘앙스 왜곡 금지
+- 화자 정보 변경 금지
+
+# 원문
+${JSON.stringify(finalTranscript.map(s => ({ speaker: s.speaker, text: s.text })))}`
+          : `# Role
+You are a professional transcript editor.
+
+# Goal
+Refine the raw speech-to-text transcript into clean, readable text.
+
+# Instructions
+1. Remove fillers ("um", "uh", "like", "you know", "so")
+2. Merge repeated phrases
+3. Connect broken sentences naturally
+4. Add proper punctuation
+5. ${toneRule}
+
+# Constraints
+- Do NOT add information not in the original
+- Do NOT change the meaning or nuance
+- Do NOT change speaker labels
+
+# Transcript
+${JSON.stringify(finalTranscript.map(s => ({ speaker: s.speaker, text: s.text })))}`;
+
+        const refineSchema = {
+          type: 'object',
+          properties: {
+            refined: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  speaker: { type: 'string' },
+                  text: { type: 'string' }
+                },
+                required: ['speaker', 'text']
+              }
+            }
+          },
+          required: ['refined']
+        };
+
+        const refineResult = await model.generateContent({
+          contents: [{ role: 'user', parts: [{ text: refinePrompt }] }],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            responseSchema: refineSchema,
+            temperature: 0.2,
+            maxOutputTokens: 65536
+          }
+        });
+        const refineData = JSON.parse(refineResult.response.text());
+        if (refineData.refined && refineData.refined.length > 0) {
+          refinedTranscript = refineData.refined;
+          console.log('[Audio] Transcript refined OK, segments:', refinedTranscript.length);
+        }
+      } catch (refineErr) {
+        console.warn('[Audio] Transcript refinement failed (using original):', refineErr.message);
+      }
+    }
+
     // ── Step 4: Build note body and save atomic note ──────────────────────
-    const transcriptText = finalTranscript
+    const originalText = finalTranscript
       .map(s => `**${s.speaker}**: ${s.text}`)
       .join('\n\n');
-    const body = `## 요약\n\n${summary}\n\n## 전사\n\n${transcriptText}`;
+
+    let body;
+    if (refinedTranscript) {
+      const refinedText = refinedTranscript
+        .map(s => `**${s.speaker}**: ${s.text}`)
+        .join('\n\n');
+      body = `## 요약\n\n${summary}\n\n## 전사 (정리)\n\n${refinedText}\n\n<details><summary>원본 전사 확인</summary>\n\n${originalText}\n\n</details>`;
+    } else {
+      body = `## 요약\n\n${summary}\n\n## 전사\n\n${originalText}`;
+    }
 
     const extraFrontmatter = {
       전사방식: usedWhisper ? 'gemini+whisper' : 'gemini',
+      리파인: refinedTranscript ? true : false,
+      language: detectedLang,
       화자수: participants.length || 'unknown',
       녹음시간: formatDuration(audioSeconds),
       speakers: participants,
@@ -3002,6 +3105,21 @@ app.get('/api/feed/:date', auth, (req, res) => {
   }
   const notes = getNotesForDate(date);
   res.json({ date, notes });
+});
+
+// Get individual note by filename
+app.get('/api/note/:filename', auth, (req, res) => {
+  const { filename } = req.params;
+  if (!filename || filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    return res.status(400).json({ error: 'Invalid filename' });
+  }
+  const filePath = path.join(NOTES_DIR, filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Note not found' });
+  }
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  const { frontmatter, body } = parseFrontmatter(raw);
+  res.json({ filename, frontmatter, body: body.trim() });
 });
 
 // Process text: simple text memo (replaces POST /api/daily/:date for plain memos)
