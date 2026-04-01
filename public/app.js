@@ -620,12 +620,20 @@ function loadTodosForFeed() {
           '<span class="todo-text">' + esc(todo.text) + '</span>' +
           (meta.length ? '<span class="todo-meta">' + esc(meta.join(' · ')) + '</span>' : '') +
           '<button class="todo-bell' + bellClass + '" data-line="' + todo.lineIndex + '" data-text="' + esc(todo.text) + '" title="알림 설정"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></button>' +
+          (todo.done ? '<button class="todo-delete" data-line="' + todo.lineIndex + '" data-date="' + fmt(feedDate) + '" data-file="' + (todo.filename || '') + '" title="삭제"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>' : '') +
           '</div>';
       }).join('');
 
       todoList.querySelectorAll('.todo-check').forEach(function (btn) {
         btn.addEventListener('click', function () {
           toggleTodo(btn.getAttribute('data-date'), parseInt(btn.getAttribute('data-line')), btn.getAttribute('data-file'));
+        });
+      });
+      todoList.querySelectorAll('.todo-delete').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          if (confirm('이 할일을 삭제하시겠습니까?')) {
+            deleteTodo(btn.getAttribute('data-date'), parseInt(btn.getAttribute('data-line')), btn.getAttribute('data-file'));
+          }
         });
       });
       todoList.querySelectorAll('.todo-bell').forEach(function (btn) {
@@ -639,6 +647,17 @@ function loadTodosForFeed() {
       });
     })
     .catch(function () { if (todoSection) todoSection.style.display = 'none'; });
+}
+
+function deleteTodo(date, lineIndex, filename) {
+  var body = { date: date, lineIndex: lineIndex };
+  if (filename) body.filename = filename;
+  api('/todo/delete', {
+    method: 'POST',
+    body: JSON.stringify(body)
+  }).then(function (r) {
+    if (r.ok) { showToast('삭제됨', 'success'); loadFeed(); }
+  }).catch(function () {});
 }
 
 function toggleTodo(date, lineIndex, filename) {

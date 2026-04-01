@@ -480,6 +480,39 @@ app.post('/api/todo/toggle', (req, res) => {
   res.json({ success: true, toggled: lineIndex });
 });
 
+app.post('/api/todo/delete', auth, (req, res) => {
+  const { date, filename, lineIndex } = req.body;
+  if (!date || lineIndex === undefined) {
+    return res.status(400).json({ error: 'date and lineIndex are required' });
+  }
+
+  let filePath;
+  if (filename) {
+    filePath = path.join(DAILY_DIR, filename);
+  } else {
+    const notes = getNotesForDate(date);
+    const todoNote = notes.find(n => {
+      const lines = n.raw.split('\n');
+      return lineIndex < lines.length && lines[lineIndex].match(/^- \[([ x])\] /);
+    });
+    if (!todoNote) return res.status(404).json({ error: 'Todo not found' });
+    filePath = path.join(DAILY_DIR, todoNote.filename);
+  }
+
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Note not found' });
+
+  const content = fs.readFileSync(filePath, 'utf-8');
+  const lines = content.split('\n');
+
+  if (lineIndex < 0 || lineIndex >= lines.length || !lines[lineIndex].match(/^- \[([ x])\] /)) {
+    return res.status(400).json({ error: 'Invalid todo line' });
+  }
+
+  lines.splice(lineIndex, 1);
+  fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+  res.json({ success: true, deleted: lineIndex });
+});
+
 // ============================================================
 // AI Summarize (Gemini proxy)
 // ============================================================
@@ -3053,16 +3086,20 @@ async function summarizeWithGemini(text, url, meta) {
   try { model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' }); }
   catch (e) { model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' }); }
 
+  const isYouTube = /youtu\.?be/.test(url);
   const urlSchema = {
     type: 'object',
     properties: {
       title: { type: 'string' },
       summary: { type: 'string' },
+      key_points: { type: 'array', items: { type: 'string' } },
       keywords: { type: 'array', items: { type: 'string' } }
     },
-    required: ['title', 'summary', 'keywords']
+    required: ['title', 'summary', 'key_points', 'keywords']
   };
-  const prompt = `다음 웹페이지 내용을 한국어로 요약해주세요.\nURL: ${url}\n제목: ${meta.title || '(없음)'}\n\n내용:\n${text}\n\n반환:\n- title: 한국어 제목\n- summary: 핵심 내용 3줄 요약\n- keywords: 핵심 키워드 3개 (한국어)`;
+  const prompt = isYouTube
+    ? `다음은 YouTube 영상의 자막입니다. 핵심 내용을 한국어로 요약해주세요. 자막을 그대로 옮기지 말고, 영상의 핵심 메시지와 주요 인사이트를 정리해주세요.\n\n제목: ${meta.title || '(없음)'}\nURL: ${url}\n\n자막:\n${text}\n\n반환:\n- title: 영상 핵심을 담은 한국어 제목\n- summary: 영상의 핵심 내용을 5~10문장으로 자연스럽게 요약 (자막 복붙 금지)\n- key_points: 핵심 포인트/인사이트 3~5개 (각 1문장)\n- keywords: 핵심 키워드 3~5개 (한국어)`
+    : `다음 웹페이지 내용을 한국어로 요약해주세요.\nURL: ${url}\n제목: ${meta.title || '(없음)'}\n\n내용:\n${text}\n\n반환:\n- title: 한국어 제목\n- summary: 핵심 내용 5~10문장 요약\n- key_points: 핵심 포인트 3~5개 (각 1문장)\n- keywords: 핵심 키워드 3~5개 (한국어)`;
   const result = await model.generateContent({
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { responseMimeType: 'application/json', responseSchema: urlSchema, temperature: 0.2 }
@@ -3072,7 +3109,11 @@ async function summarizeWithGemini(text, url, meta) {
 
 function buildUrlNoteBody(summary, meta, url) {
   let body = `## 요약\n\n${summary.summary}\n\n`;
-  if (meta.description) body += `> ${meta.description}\n\n`;
+  if (summary.key_points && summary.key_points.length) {
+    body += `## 핵심 포인트\n\n`;
+    for (const pt of summary.key_points) body += `- ${pt}\n`;
+    body += '\n';
+  }
   if (summary.keywords && summary.keywords.length) body += `**키워드**: ${summary.keywords.join(', ')}\n\n`;
   body += `## 출처\n\n- **URL**: ${url}\n`;
   if (meta.title) body += `- **원제**: ${meta.title}\n`;
