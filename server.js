@@ -123,9 +123,9 @@ const OBSIDIAN_REST_API_KEY = process.env.OBSIDIAN_REST_API_KEY || '';
 app.set('trust proxy', 1); // Trust first proxy (Cloudflare tunnel)
 app.use(express.json());
 
-// No cache for sw.js only (SW manages caching for other assets)
+// No cache for HTML/JS/CSS (SW manages offline caching)
 app.use((req, res, next) => {
-  if (req.path === '/sw.js') {
+  if (req.path === '/sw.js' || req.path.endsWith('.html') || req.path.endsWith('.js') || req.path.endsWith('.css') || req.path === '/') {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.set('Pragma', 'no-cache');
   }
