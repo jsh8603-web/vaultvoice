@@ -2229,20 +2229,55 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
   return { created: true, filename };
 }
 
-// Read all atomic notes for a given date, returns sorted array
-function getNotesForDate(date) {
-  if (!fs.existsSync(NOTES_DIR)) return [];
+// ============================================================
+// Unified VV Note Finder (3-tier: 99_vv → user folders → skip Claude Control)
+// ============================================================
+const VV_SEARCH_EXCLUDE = new Set(['.obsidian', '.claude', '90_Attachments', 'node_modules', '00_Claude_Control']);
 
+function findVVNote(filename) {
+  // Tier 1: 99_vaultvoice/
+  const t1 = path.join(NOTES_DIR, filename);
+  if (fs.existsSync(t1)) return t1;
+  // Tier 2: other user folders (use cached file list for speed)
+  const cached = getAllMdFilesCached();
+  const match = cached.find(fp => path.basename(fp) === filename && !fp.includes(NOTES_DIR));
+  if (match) return match;
+  return null;
+}
+
+function getVVNotesForDate(date) {
   const prefix = `${date}_`;
-  const files = fs.readdirSync(NOTES_DIR)
-    .filter(f => f.startsWith(prefix) && f.endsWith('.md'))
-    .sort();
-
-  return files.map(f => {
-    const raw = fs.readFileSync(path.join(NOTES_DIR, f), 'utf-8');
+  const results = new Map(); // filename → fullPath (dedup)
+  // Tier 1: 99_vaultvoice/
+  if (fs.existsSync(NOTES_DIR)) {
+    for (const f of fs.readdirSync(NOTES_DIR)) {
+      if (f.startsWith(prefix) && f.endsWith('.md')) results.set(f, path.join(NOTES_DIR, f));
+    }
+  }
+  // Tier 2: other user folders
+  try {
+    for (const d of fs.readdirSync(VAULT_PATH)) {
+      if (VV_SEARCH_EXCLUDE.has(d) || d === VV_BASE || d.startsWith('.')) continue;
+      const fullDir = path.join(VAULT_PATH, d);
+      try { if (!fs.statSync(fullDir).isDirectory()) continue; } catch (e) { continue; }
+      for (const fp of getAllMdFiles(fullDir)) {
+        const base = path.basename(fp);
+        if (base.startsWith(prefix) && !results.has(base)) results.set(base, fp);
+      }
+    }
+  } catch (e) { /* skip */ }
+  // Sort by filename (= chronological) and read content
+  const sorted = [...results.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  return sorted.map(([filename, fullPath]) => {
+    const raw = fs.readFileSync(fullPath, 'utf-8');
     const { frontmatter, body } = parseFrontmatter(raw);
-    return { filename: f, frontmatter, body: body.trim(), raw };
+    return { filename, fullPath, frontmatter, body: body.trim(), raw };
   });
+}
+
+// Read all atomic notes for a given date (delegates to unified finder)
+function getNotesForDate(date) {
+  return getVVNotesForDate(date);
 }
 
 // Combine notes into a single body grouped by 유형 (type) for display
@@ -3380,8 +3415,8 @@ app.post('/api/note/summarize', auth, async (req, res) => {
   if (!filename || filename.includes('..') || filename.includes('/') || filename.includes('\\')) return res.status(400).json({ error: 'Invalid filename' });
   if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_key_here') return res.status(503).json({ error: 'Gemini API key not configured' });
 
-  const filePath = path.join(NOTES_DIR, filename);
-  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Note not found' });
+  const filePath = findVVNote(filename);
+  if (!filePath) return res.status(404).json({ error: 'Note not found' });
 
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
@@ -3409,8 +3444,8 @@ app.post('/api/note/delete', auth, (req, res) => {
   if (!filename) return res.status(400).json({ error: 'filename required' });
   if (!filename || filename.includes('..') || filename.includes('/') || filename.includes('\\')) return res.status(400).json({ error: 'Invalid filename' });
 
-  const filePath = path.join(NOTES_DIR, filename);
-  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Note not found' });
+  const filePath = findVVNote(filename);
+  if (!filePath) return res.status(404).json({ error: 'Note not found' });
 
   try {
     fs.unlinkSync(filePath);
@@ -3432,8 +3467,8 @@ app.post('/api/note/comment', auth, async (req, res) => {
   if (!filename || filename.includes('..') || filename.includes('/') || filename.includes('\\')) return res.status(400).json({ error: 'Invalid filename' });
   if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_key_here') return res.status(503).json({ error: 'Gemini API key not configured' });
 
-  const filePath = path.join(NOTES_DIR, filename);
-  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Note not found' });
+  const filePath = findVVNote(filename);
+  if (!filePath) return res.status(404).json({ error: 'Note not found' });
 
   try {
     const refined = await refineComment(comment);
@@ -3477,8 +3512,8 @@ app.post('/api/note/related', auth, async (req, res) => {
   if (!filename || filename.includes('..') || filename.includes('/') || filename.includes('\\')) return res.status(400).json({ error: 'Invalid filename' });
   if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_key_here') return res.status(503).json({ error: 'Gemini API key not configured' });
 
-  const filePath = path.join(NOTES_DIR, filename);
-  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Note not found' });
+  const filePath = findVVNote(filename);
+  if (!filePath) return res.status(404).json({ error: 'Note not found' });
 
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
