@@ -3487,14 +3487,14 @@ app.post('/api/note/related', auth, async (req, res) => {
     if (!keywords.length) return res.json({ notes: [] });
 
     const query = keywords.join(' ');
-    // Search only VaultVoice notes (not entire vault)
-    const allFiles = fs.existsSync(NOTES_DIR) ? getAllMdFiles(NOTES_DIR) : [];
+    // 3-tier search: 99_vaultvoice → other user folders → Claude Control (keyword-gated)
     const scored = [];
-    for (const fp of allFiles) {
+    function scoreRelated(fp) {
       const base = path.basename(fp);
-      if (base === filename) continue;
+      if (base === filename) return;
       try {
-        const content = fs.readFileSync(fp, 'utf-8').toLowerCase();
+        const raw = fs.readFileSync(fp, 'utf-8');
+        const content = raw.toLowerCase();
         let score = 0;
         for (const kw of keywords) {
           if (kw.length < 2) continue;
@@ -3502,11 +3502,27 @@ app.post('/api/note/related', auth, async (req, res) => {
           const hits = (content.match(regex) || []).length;
           if (hits > 0) score += Math.min(hits, 5);
         }
-        if (score > 0) {
-          const { frontmatter } = parseFrontmatter(fs.readFileSync(fp, 'utf-8'));
+        if (score >= 3) { // minimum threshold to avoid garbage matches
+          const { frontmatter } = parseFrontmatter(raw);
           scored.push({ filename: base, title: frontmatter.title || base.replace(/\.md$/, ''), score });
         }
       } catch (e) { /* skip */ }
+    }
+    // Tier 1: VaultVoice notes
+    if (fs.existsSync(NOTES_DIR)) getAllMdFiles(NOTES_DIR).forEach(scoreRelated);
+    // Tier 2: Other user folders (exclude Claude Control, .obsidian, etc.)
+    try {
+      for (const d of fs.readdirSync(VAULT_PATH)) {
+        if (SEARCH_EXCLUDE_DIRS.has(d) || d === SYSTEM_FOLDER || d === VV_BASE || d.startsWith('.')) continue;
+        const fullDir = path.join(VAULT_PATH, d);
+        try { if (!fs.statSync(fullDir).isDirectory()) continue; } catch (e) { continue; }
+        getAllMdFiles(fullDir).forEach(scoreRelated);
+      }
+    } catch (e) { /* skip */ }
+    // Tier 3: Claude Control (only if keywords match system terms)
+    if (SYSTEM_KEYWORDS.test(query)) {
+      const sysDir = path.join(VAULT_PATH, SYSTEM_FOLDER);
+      if (fs.existsSync(sysDir)) getAllMdFiles(sysDir).forEach(scoreRelated);
     }
     scored.sort((a, b) => b.score - a.score);
     const notes = scored.slice(0, 3).map(s => ({ filename: s.filename, title: s.title, snippet: '' }));
