@@ -92,7 +92,7 @@ function auth(req, res, next) {
 
 // Apply auth to all /api routes except health
 app.use('/api', (req, res, next) => {
-  if (req.path === '/health' || req.path === '/reset' || req.path.startsWith('/auth/google')) return next();
+  if (req.path === '/health' || req.path === '/reset' || req.path.startsWith('/auth/google') || req.path.startsWith('/attachments/')) return next();
   auth(req, res, next);
 });
 

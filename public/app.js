@@ -1067,49 +1067,68 @@ function dismissEventBanner() {
 // ============================================================
 function renderMd(md) {
   if (!md) return '';
-  // Process markdown tables before escaping (they contain | which we need)
-  var parts = md.split(/\n\n+/);
-  var processed = parts.map(function (block) {
-    var lines = block.trim().split('\n');
-    // Detect markdown table: at least 2 lines starting with |
-    if (lines.length >= 2 && lines[0].trim().charAt(0) === '|' && lines[1].trim().match(/^\|[\s:|-]+\|/)) {
-      return renderMdTable(lines);
-    }
-    // Detect details/summary HTML blocks — pass through without escaping
-    if (block.trim().match(/^<details/i)) {
-      return block.trim();
-    }
-    return null; // process normally
+
+  // 1. Extract tables and <details> blocks from raw md before processing
+  //    Replace them with placeholders, process the rest, then reinsert
+  var placeholders = [];
+  var ph = function (content) {
+    var idx = placeholders.length;
+    placeholders.push(content);
+    return '\x00PH' + idx + '\x00';
+  };
+
+  // Extract <details>...</details> blocks
+  var processed = md.replace(/<details[\s\S]*?<\/details>/gi, function (m) {
+    return ph(m);
   });
 
-  var h = '';
-  var blockIdx = 0;
-  var splitBlocks = md.split(/\n\n+/);
-  for (var i = 0; i < splitBlocks.length; i++) {
-    if (processed[i] !== null) {
-      h += processed[i];
+  // Extract markdown tables (line-by-line scan)
+  var lines = processed.split('\n');
+  var result = [];
+  var i = 0;
+  while (i < lines.length) {
+    var line = lines[i];
+    // Detect table header: starts with | and next line is separator |---|
+    if (line.trim().charAt(0) === '|' && i + 1 < lines.length && lines[i + 1].trim().match(/^\|[\s:|-]+\|/)) {
+      var tableLines = [line];
+      i++;
+      // Collect separator + data rows
+      while (i < lines.length && lines[i].trim().charAt(0) === '|') {
+        tableLines.push(lines[i]);
+        i++;
+      }
+      result.push(ph(renderMdTable(tableLines)));
     } else {
-      var seg = esc(splitBlocks[i]);
-      seg = seg.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-      seg = seg.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-      seg = seg.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-      seg = seg.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-      seg = seg.replace(/\*(.+?)\*/g, '<em>$1</em>');
-      seg = seg.replace(/- \[x\] (.+)/g, '<li style="list-style:none"><input type="checkbox" checked disabled> <s>$1</s></li>');
-      seg = seg.replace(/- \[ \] (.+)/g, '<li style="list-style:none"><input type="checkbox" disabled> $1</li>');
-      seg = seg.replace(/^- (.+)$/gm, '<li>$1</li>');
-      seg = seg.replace(/!\[\[([^\]]+\.(webm|mp3|wav|m4a|ogg|mp4))\]\]/gi, function (match, p) {
-        var fname = p.split('/').pop();
-        return '<audio controls style="width:100%;margin:4px 0"><source src="/api/attachments/' + encodeURIComponent(fname) + '"></audio>';
-      });
-      seg = seg.replace(/!\[\[([^\]]+)\]\]/g, function (match, p) {
-        var fname = p.split('/').pop();
-        return '<img src="/api/attachments/' + encodeURIComponent(fname) + '" style="max-width:100%;border-radius:8px;margin:4px 0" alt="' + esc(fname) + '">';
-      });
-      h += seg;
+      result.push(line);
+      i++;
     }
-    if (i < splitBlocks.length - 1) h += '<br><br>';
   }
+  processed = result.join('\n');
+
+  // 2. Now process the rest as normal markdown
+  var h = esc(processed);
+  h = h.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  h = h.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  h = h.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  h = h.replace(/- \[x\] (.+)/g, '<li style="list-style:none"><input type="checkbox" checked disabled> <s>$1</s></li>');
+  h = h.replace(/- \[ \] (.+)/g, '<li style="list-style:none"><input type="checkbox" disabled> $1</li>');
+  h = h.replace(/^- (.+)$/gm, '<li>$1</li>');
+  h = h.replace(/!\[\[([^\]]+\.(webm|mp3|wav|m4a|ogg|mp4))\]\]/gi, function (match, p) {
+    var fname = p.split('/').pop();
+    return '<audio controls style="width:100%;margin:4px 0"><source src="/api/attachments/' + encodeURIComponent(fname) + '"></audio>';
+  });
+  h = h.replace(/!\[\[([^\]]+)\]\]/g, function (match, p) {
+    var fname = p.split('/').pop();
+    return '<img src="/api/attachments/' + encodeURIComponent(fname) + '" style="max-width:100%;border-radius:8px;margin:4px 0" alt="' + esc(fname) + '">';
+  });
+  h = h.replace(/\n\n+/g, '<br><br>');
+
+  // 3. Reinsert placeholders
+  h = h.replace(/\x00PH(\d+)\x00/g, function (m, idx) {
+    return placeholders[parseInt(idx)];
+  });
   return h;
 }
 
