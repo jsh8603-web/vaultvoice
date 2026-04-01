@@ -931,19 +931,13 @@ async function executeSearch(query) {
 
       if (score > 0) {
         const relPath = path.relative(VAULT_PATH, filePath);
-        // Extract a relevant snippet around the first keyword hit
+        // Extract snippet: prefer content after frontmatter (summary + body start)
         let snippet = '';
-        for (const kw of keywords) {
-          if (kw.length < 2) continue;
-          const idx = content.indexOf(kw);
-          if (idx >= 0) {
-            const start = Math.max(0, idx - 40);
-            const end = Math.min(content.length, idx + 160);
-            snippet = content.slice(start, end).replace(/\n/g, ' ').trim();
-            break;
-          }
-        }
-        if (!snippet) snippet = content.slice(0, 200).replace(/\n/g, ' ');
+        const fmEnd = content.indexOf('---', content.indexOf('---') + 3);
+        const bodyStart = fmEnd >= 0 ? fmEnd + 3 : 0;
+        const body = content.slice(bodyStart).trim();
+        snippet = body.slice(0, 500).replace(/\n/g, ' ').trim();
+        if (!snippet) snippet = content.slice(0, 500).replace(/\n/g, ' ');
         scored.push({ path: relPath, score, snippet });
       }
     } catch (e) { /* skip */ }
