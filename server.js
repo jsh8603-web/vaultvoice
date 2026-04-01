@@ -3339,8 +3339,26 @@ async function summarizeWithGemini(text, url, meta) {
     required: ['title', 'summary', 'key_points', 'keywords']
   };
   const prompt = isYouTube
-    ? `다음은 YouTube 영상의 자막입니다. 핵심 내용을 한국어로 요약해주세요. 자막을 그대로 옮기지 말고, 영상의 핵심 메시지와 주요 인사이트를 정리해주세요.\n\n제목: ${meta.title || '(없음)'}\nURL: ${url}\n\n자막:\n${text}\n\n반환:\n- title: 영상 핵심을 담은 한국어 제목\n- summary: 영상의 핵심 내용을 5~10문장으로 자연스럽게 요약 (자막 복붙 금지)\n- key_points: 핵심 포인트/인사이트 3~5개 (각 1문장)\n- keywords: 핵심 키워드 3~5개 (한국어)`
-    : `다음 웹페이지 내용을 한국어로 요약해주세요.\nURL: ${url}\n제목: ${meta.title || '(없음)'}\n\n내용:\n${text}\n\n반환:\n- title: 한국어 제목\n- summary: 핵심 내용 5~10문장 요약\n- key_points: 핵심 포인트 3~5개 (각 1문장)\n- keywords: 핵심 키워드 3~5개 (한국어)`;
+    ? `다음은 YouTube 영상의 자막입니다. 영상 내용을 깊이 있게 한국어로 요약해주세요.
+
+## 요약 원칙
+1. 자막을 그대로 옮기지 말고, 영상에서 설명하는 **구체적인 방법론, 프로세스, 도구, 사례**를 빠짐없이 정리하라
+2. "~에 대해 이야기했다" 같은 메타 설명 금지 → 실제 내용을 직접 서술하라
+3. 핵심 개념이 등장하면 그 개념이 **무엇이고, 어떻게 작동하는지**를 포함하라
+4. 숫자, 비교, 구체적 예시가 있으면 반드시 포함하라
+
+제목: ${meta.title || '(없음)'}
+URL: ${url}
+
+자막:
+${text}
+
+반환:
+- title: 영상 핵심을 담은 구체적인 한국어 제목
+- summary: 영상의 핵심 내용을 8~15문장으로 구체적으로 요약 (방법론/프로세스/사례 포함, 자막 복붙 금지)
+- key_points: 핵심 포인트/방법론/인사이트 5~8개 (각 1~2문장, 구체적으로)
+- keywords: 핵심 키워드 3~5개 (한국어)`
+    : `다음 웹페이지 내용을 한국어로 요약해주세요. 구체적인 방법론, 수치, 사례를 빠뜨리지 마세요.\nURL: ${url}\n제목: ${meta.title || '(없음)'}\n\n내용:\n${text}\n\n반환:\n- title: 한국어 제목\n- summary: 핵심 내용 8~15문장 요약 (구체적 방법론/사례 포함)\n- key_points: 핵심 포인트 5~8개 (각 1~2문장)\n- keywords: 핵심 키워드 3~5개 (한국어)`;
   const result = await model.generateContent({
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { responseMimeType: 'application/json', responseSchema: urlSchema, temperature: 0.2, maxOutputTokens: 8192 }
