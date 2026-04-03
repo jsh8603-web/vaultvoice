@@ -33,6 +33,30 @@ self.addEventListener('activate', function (e) {
   self.clients.claim();
 });
 
+// Push notification handler (SR #5: iOS — title+body+icon only)
+self.addEventListener('push', function (e) {
+  var data = {};
+  try { data = e.data ? e.data.json() : {}; } catch (err) {}
+  e.waitUntil(
+    self.registration.showNotification(data.title || 'VaultVoice', {
+      body: data.body || '',
+      icon: '/icons/icon-192.png'
+    })
+  );
+});
+
+self.addEventListener('notificationclick', function (e) {
+  e.notification.close();
+  e.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].url && list[i].focus) return list[i].focus();
+      }
+      if (clients.openWindow) return clients.openWindow('/');
+    })
+  );
+});
+
 // Fetch strategy
 self.addEventListener('fetch', function (e) {
   var url = new URL(e.request.url);

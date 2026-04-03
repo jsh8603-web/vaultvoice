@@ -216,6 +216,17 @@
         </div>
       </div>
 
+      <!-- 데일리 브리핑 푸시 알림 -->
+      <div class="s-group">
+        <h2>데일리 브리핑 알림</h2>
+        <p class="s-desc">매일 07:30 브리핑을 푸시 알림으로 받습니다. 홈 화면에 추가 후 사용하세요.</p>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+          <button class="btn-sm btn-accent-purple" id="push-subscribe-btn" style="flex:1">알림 구독</button>
+          <button class="btn-sm" id="push-unsubscribe-btn" style="flex:1;display:none">구독 해지</button>
+        </div>
+        <div id="push-status" style="font-size:12px;color:var(--text2);margin-top:6px;text-align:center"></div>
+      </div>
+
       <!-- 알림 목록 -->
       <div class="s-group">
         <h2>알림 목록</h2>

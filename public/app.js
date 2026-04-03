@@ -1171,6 +1171,7 @@ function loadSettings() {
   renderReminderList();
   loadQRCode();
   checkCalendarStatus();
+  initPushUI();
 }
 
 var _calWasConnected = false;
@@ -1968,6 +1969,8 @@ document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('clip-send').addEventListener('click', clipSend);
   document.getElementById('clip-recv').addEventListener('click', clipRecv);
   document.getElementById('run-test').addEventListener('click', runFeatureTest);
+  document.getElementById('push-subscribe-btn').addEventListener('click', subscribePush);
+  document.getElementById('push-unsubscribe-btn').addEventListener('click', unsubscribePush);
 
   // ---- Calendar event detection ----
   document.getElementById('event-detect-add').addEventListener('click', registerDetectedEvent);
@@ -1987,6 +1990,98 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('auth').style.display = '';
   }
 });
+
+// ============================================================
+// Web Push — Daily Briefing subscription (SR #4: urlB64ToUint8Array, SR #5: iOS gesture)
+// ============================================================
+function urlB64ToUint8Array(base64String) {
+  var padding = '='.repeat((4 - base64String.length % 4) % 4);
+  var base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  var rawData = atob(base64);
+  var outputArray = new Uint8Array(rawData.length);
+  for (var i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+function updatePushUI(subscribed) {
+  var subBtn = document.getElementById('push-subscribe-btn');
+  var unsubBtn = document.getElementById('push-unsubscribe-btn');
+  var status = document.getElementById('push-status');
+  if (!subBtn) return;
+  if (subscribed) {
+    subBtn.style.display = 'none';
+    unsubBtn.style.display = '';
+    status.textContent = '알림 구독 중';
+  } else {
+    subBtn.style.display = '';
+    unsubBtn.style.display = 'none';
+    status.textContent = '';
+  }
+}
+
+function initPushUI() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    var s = document.getElementById('push-status');
+    if (s) s.textContent = '이 브라우저는 푸시 알림을 지원하지 않습니다.';
+    return;
+  }
+  navigator.serviceWorker.ready.then(function (reg) {
+    reg.pushManager.getSubscription().then(function (sub) {
+      updatePushUI(!!sub);
+    });
+  });
+}
+
+function subscribePush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  var status = document.getElementById('push-status');
+  if (status) status.textContent = '구독 중...';
+
+  api('/push/vapid-public-key')
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d.publicKey) throw new Error('VAPID key unavailable');
+      return navigator.serviceWorker.ready.then(function (reg) {
+        return reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlB64ToUint8Array(d.publicKey)
+        });
+      });
+    })
+    .then(function (sub) {
+      return api('/push/subscribe', {
+        method: 'POST',
+        body: JSON.stringify(sub.toJSON())
+      });
+    })
+    .then(function () {
+      updatePushUI(true);
+      showToast('알림 구독 완료', 'ok');
+    })
+    .catch(function (e) {
+      if (status) status.textContent = '구독 실패: ' + e.message;
+    });
+}
+
+function unsubscribePush() {
+  navigator.serviceWorker.ready.then(function (reg) {
+    reg.pushManager.getSubscription().then(function (sub) {
+      if (!sub) { updatePushUI(false); return; }
+      var endpoint = sub.endpoint;
+      sub.unsubscribe().then(function () {
+        return api('/push/unsubscribe', {
+          method: 'DELETE',
+          body: JSON.stringify({ endpoint: endpoint })
+        });
+      }).then(function () {
+        updatePushUI(false);
+        showToast('알림 구독 해지됨', 'ok');
+      }).catch(function (e) {
+        showToast('해지 실패: ' + e.message, 'err');
+      });
+    });
+  });
+}
 
 // ============================================================
 // Service Worker

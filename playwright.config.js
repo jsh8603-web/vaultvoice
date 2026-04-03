@@ -22,12 +22,12 @@ module.exports = defineConfig({
   projects: [
     {
       name: 'api-unit',
-      testMatch: /api-unit|vaultvoice|calendar/,
+      testMatch: /api-unit|vaultvoice|calendar|stage2-3/,
       use: { browserName: 'chromium' },
     },
     {
       name: 'ai-integration',
-      testMatch: /phase3-scenarios/,
+      testMatch: /phase3-scenarios|stage2-3/,
       timeout: 60000,
       retries: 1,
       use: { browserName: 'chromium' },

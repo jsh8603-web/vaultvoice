@@ -16,6 +16,21 @@ try {
   ({ default: OpenAI } = require('openai'));
 } catch (e) { console.warn('[Audio] OpenAI SDK not installed:', e.message); }
 
+// YAML/Frontmatter parsing (gray-matter + js-yaml replaces custom parseFrontmatter)
+const matter = require('gray-matter');
+const yaml = require('js-yaml');
+
+// Pipeline queue (p-queue v7 CJS) — filePath-scoped serialization
+const PQueue = require('p-queue').default;
+
+// Entity Indexer — F5 module
+const { initEntityIndexer, indexNote, resyncEntityMap } = require('./entityIndexer');
+
+// Web Push + Scheduler (F7)
+let webpush, schedule;
+try { webpush  = require('web-push');     } catch (e) { console.warn('[Push] web-push not installed:', e.message); }
+try { schedule = require('node-schedule'); } catch (e) { console.warn('[Push] node-schedule not installed:', e.message); }
+
 // Optional URL processing libs (graceful degradation)
 let Readability, JSDOM, getSubtitles;
 try {
@@ -56,6 +71,51 @@ const MEDIA_DIRS = {
 const MAX_UPLOAD_SIZE = parseInt(process.env.MAX_UPLOAD_SIZE || '100') * 1024 * 1024; // MB to bytes
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+
+// ============================================================
+// F7 — VAPID + Subscriptions (Sub 2-2)
+// ============================================================
+const SUBSCRIPTIONS_PATH = path.join(__dirname, 'subscriptions.json');
+const _subQueue = new PQueue({ concurrency: 1 }); // SR #3: 동시쓰기 방지
+
+function loadSubscriptions() {
+  try {
+    if (fs.existsSync(SUBSCRIPTIONS_PATH)) return JSON.parse(fs.readFileSync(SUBSCRIPTIONS_PATH, 'utf-8'));
+  } catch (e) { console.warn('[Push] Failed to load subscriptions:', e.message); }
+  return [];
+}
+
+function saveSubscriptions(subs) {
+  // SR #3: atomic write tmp→rename
+  const tmp = SUBSCRIPTIONS_PATH + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(subs, null, 2), 'utf-8');
+  fs.renameSync(tmp, SUBSCRIPTIONS_PATH);
+}
+
+function initVapid() {
+  if (!webpush) return;
+  let pub  = process.env.VAPID_PUBLIC_KEY;
+  let priv = process.env.VAPID_PRIVATE_KEY;
+  const email = process.env.VAPID_EMAIL || 'mailto:admin@vaultvoice.app';
+
+  if (!pub || !priv) {
+    const keys = webpush.generateVAPIDKeys();
+    pub  = keys.publicKey;
+    priv = keys.privateKey;
+    // 영속화: .env에 추가 (재시작 후에도 유지)
+    try {
+      const envPath = path.join(__dirname, '.env');
+      const envLine = `\nVAPID_PUBLIC_KEY=${pub}\nVAPID_PRIVATE_KEY=${priv}\nVAPID_EMAIL=${email}\n`;
+      fs.appendFileSync(envPath, envLine, 'utf-8');
+      process.env.VAPID_PUBLIC_KEY  = pub;
+      process.env.VAPID_PRIVATE_KEY = priv;
+      process.env.VAPID_EMAIL       = email;
+      console.log('[Push] VAPID keys generated and saved to .env');
+    } catch (e) { console.warn('[Push] Failed to save VAPID keys:', e.message); }
+  }
+  webpush.setVapidDetails(email, pub, priv);
+  console.log('[Push] VAPID initialized');
+}
 
 // ============================================================
 // Gemini Model Tiering Helpers
@@ -356,6 +416,18 @@ var s=document.getElementById('s'),log=[];
 });
 
 // ============================================================
+// Daily Briefing — must be BEFORE /api/daily/:date to avoid param match
+// ============================================================
+app.get('/api/daily/briefing', auth, async (req, res) => {
+  try {
+    const result = await runDailyBriefing();
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
 // Get daily note
 // ============================================================
 app.get('/api/daily/:date', (req, res) => {
@@ -395,10 +467,7 @@ app.post('/api/daily/:date', (req, res) => {
 
   let newEntry;
   if (isTodo) {
-    let meta = '';
-    if (priority) meta += ` [priority::${priority}]`;
-    if (due) meta += ` [due::${due}]`;
-    newEntry = `- [ ] ${content.trim()}${meta}`;
+    newEntry = formatTaskToMarkdown({ title: content.trim(), due: due || null, priority: priority || null });
   } else {
     const timestamp = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
     newEntry = `- ${content.trim()} *(${timestamp})*`;
@@ -921,7 +990,8 @@ const JARVIS_TOOLS = [
   { name: 'toggle_todo', description: 'Toggle a todo item done/undone by date and line index.', parameters: { type: 'OBJECT', properties: { date: { type: 'STRING' }, lineIndex: { type: 'NUMBER' } }, required: ['date', 'lineIndex'] } },
   { name: 'summarize_note', description: 'Generate AI summary of a specific note.', parameters: { type: 'OBJECT', properties: { filename: { type: 'STRING' } }, required: ['filename'] } },
   { name: 'process_url', description: 'Fetch a URL, extract content, summarize with AI, and save as a new note.', parameters: { type: 'OBJECT', properties: { url: { type: 'STRING', description: 'The URL to process' } }, required: ['url'] } },
-  { name: 'add_comment', description: 'Add a user comment to an existing note. The comment is refined by AI before appending.', parameters: { type: 'OBJECT', properties: { filename: { type: 'STRING', description: 'Target note filename' }, comment: { type: 'STRING', description: 'User comment in natural language' } }, required: ['filename', 'comment'] } }
+  { name: 'add_comment', description: 'Add a user comment to an existing note. The comment is refined by AI before appending.', parameters: { type: 'OBJECT', properties: { filename: { type: 'STRING', description: 'Target note filename' }, comment: { type: 'STRING', description: 'User comment in natural language' } }, required: ['filename', 'comment'] } },
+  { name: 'reanalyze_perspective', description: '노트의 Multi-Lens 분석을 재실행합니다. analyzed_lenses를 초기화하고 area 기반 렌즈를 다시 적용합니다.', parameters: { type: 'OBJECT', properties: { filename: { type: 'STRING', description: 'Note filename (e.g. 2026-04-01_093000_memo.md)' }, lens: { type: 'STRING', description: '렌즈 강제 지정 (Career/Family/Finance). 생략 시 area 기반 자동 선택' } }, required: ['filename'] } }
 ];
 
 // Folders excluded from general search (always)
@@ -978,6 +1048,7 @@ async function executeToolCall(name, args) {
     case 'summarize_note': return await executeSummarizeNote(args);
     case 'process_url': return await executeProcessUrl(args);
     case 'add_comment': return await executeAddComment(args);
+    case 'reanalyze_perspective': return await executeReanalyzePerspective(args);
     default: return { error: `Unknown tool: ${name}` };
   }
 }
@@ -1088,6 +1159,21 @@ async function executeAddComment(args) {
   }
 }
 
+async function executeReanalyzePerspective(args) {
+  if (!args.filename) return { result: 'filename required' };
+  if (args.filename.includes('..') || args.filename.includes('/') || args.filename.includes('\\')) return { result: 'Invalid filename' };
+  const filePath = findVVNote(args.filename);
+  if (!filePath) return { result: `"${args.filename}" 파일을 찾을 수 없습니다.` };
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  const { frontmatter: fm, body } = parseFrontmatter(raw);
+  fm.analyzed_lenses = [];
+  if (args.lens) fm.area = args.lens;
+  fs.writeFileSync(filePath, serializeFrontmatter(fm) + body, 'utf-8');
+  const freshRaw = fs.readFileSync(filePath, 'utf-8');
+  await applyPerspectiveFilters(filePath, freshRaw);
+  return { result: `"${args.filename}" Multi-Lens 분석을 재실행했습니다.` };
+}
+
 // Expand query keywords using Gemini Pro for synonym/related term matching
 async function expandKeywords(query) {
   try {
@@ -1196,7 +1282,8 @@ function executeReadDailyNote(dateStr) {
 
 function executeAddTodo(args) {
   const date = resolveDate(args.date);
-  const entry = `- [ ] ${args.task} [priority::${args.priority || '보통'}]`;
+  const priorityMap = { '높음': 'High', '보통': 'Medium', '낮음': 'Low' };
+  const entry = formatTaskToMarkdown({ title: args.task, priority: priorityMap[args.priority] || null });
   createAtomicNote(date, 'todo', entry, ['todo']);
   return { result: `"${args.task}" 할일을 ${date}에 추가했습니다.` };
 }
@@ -2153,55 +2240,45 @@ app.get('/api/notes/recent', (req, res) => {
 // Helpers
 // ============================================================
 function parseFrontmatter(content) {
-  const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!match) return { frontmatter: {}, body: content };
-
-  const fm = {};
-  const lines = match[1].split('\n');
-  let currentKey = null;
-
-  for (const line of lines) {
-    const kvMatch = line.match(/^(\w+[\w\s]*?):\s*(.*)$/);
-    if (kvMatch) {
-      currentKey = kvMatch[1].trim();
-      let val = kvMatch[2].trim();
-      
-      // Support for inline array [a, b, c]
-      if (val.startsWith('[') && val.endsWith(']')) {
-        fm[currentKey] = val.slice(1, -1).split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
-      } else if (val) {
-        fm[currentKey] = val;
-      } else {
-        fm[currentKey] = [];
-      }
-    } else if (currentKey && line.match(/^\s+-\s+(.+)$/)) {
-      const item = line.match(/^\s+-\s+(.+)$/)[1].trim();
-      if (!Array.isArray(fm[currentKey])) fm[currentKey] = [];
-      fm[currentKey].push(item);
-    }
+  try {
+    const file = matter(content);
+    return { frontmatter: file.data, body: file.content };
+  } catch (e) {
+    return { frontmatter: {}, body: content };
   }
-
-  return { frontmatter: fm, body: match[2] };
 }
 
 function serializeFrontmatter(fm) {
-  let out = '---\n';
-  for (const [key, val] of Object.entries(fm)) {
-    if (Array.isArray(val)) {
-      if (val.length === 0) {
-        out += `${key}: []\n`;
-      } else {
-        out += `${key}:\n`;
-        for (const item of val) {
-          out += `  - ${item}\n`;
-        }
-      }
-    } else {
-      out += `${key}: ${val}\n`;
-    }
+  // Remove undefined/null values; keep empty strings and arrays
+  const clean = Object.fromEntries(
+    Object.entries(fm).filter(([, v]) => v !== undefined && v !== null)
+  );
+  // matter.stringify('', ...) may append extra trailing newline on empty body
+  // Normalize to single trailing newline so body concatenation produces one blank line
+  return matter.stringify('', clean).replace(/\n+$/, '\n');
+}
+
+// ============================================================
+// Pipeline Queue — filePath-scoped serialization via p-queue
+// ============================================================
+const _pipelineQueues = new Map();
+
+function getPipelineQueue(filePath) {
+  if (!_pipelineQueues.has(filePath)) {
+    const q = new PQueue({ concurrency: 1 });
+    q.on('idle', () => _pipelineQueues.delete(filePath));
+    _pipelineQueues.set(filePath, q);
   }
-  out += '---\n';
-  return out;
+  return _pipelineQueues.get(filePath);
+}
+
+async function runPipeline(filePath, stages) {
+  return getPipelineQueue(filePath).add(async () => {
+    for (const stage of stages) {
+      try { await stage(filePath); }
+      catch (e) { console.warn(`[Pipeline] ${stage.name} failed:`, e.message); }
+    }
+  });
 }
 
 /**
@@ -2245,14 +2322,25 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
 
   const fm = {
     '날짜': date,
-    '시간': `"${timeDisplay}"`,
+    '시간': timeDisplay,
     'source_type': type,
-    '유형': type, // Keep for backward compatibility
-    'category': '""',
-    'status': 'captured',
+    '유형': type,
+    'category': '',
+    'status': 'fleeting',
     'tags': unique,
     'topic': [],
-    'summary': '""',
+    'title': '',
+    'aliases': [],
+    'summary': '',
+    'type': '',
+    'mood': '',
+    'priority': '',
+    'area': '',
+    'project': '',
+    'analyzed_lenses': [],
+    'participants': [],
+    'projects': [],
+    'places': [],
     ...extraFrontmatter
   };
   const body = `\n${linkedEntry}\n`;
@@ -2261,61 +2349,84 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
   fs.writeFileSync(filePath, content, 'utf-8');
   invalidateFileCache();
 
-  // Async: generate title and perform PIE analysis (sequentially to avoid race conditions)
+  // Async AI pipeline — each stage independent, no cascade failures
   if (GEMINI_API_KEY && GEMINI_API_KEY !== 'your_key_here') {
-    generateNoteTitle(linkedEntry).then(title => {
-      if (title) {
-        try {
-          const raw = fs.readFileSync(filePath, 'utf-8');
-          const { frontmatter: fm2 } = parseFrontmatter(raw);
-          if (!fm2.title) {
-            injectTitleToFrontmatter(filePath, raw, title);
-            titleCache[filename] = title;
-            console.log(`[Title] Generated for ${filename}: ${title}`);
-          }
-        } catch (e) { console.warn('[Title] Inject failed:', e.message); }
-      }
-      // After title (success or fail), run PIE analysis
-      const currentRaw = fs.readFileSync(filePath, 'utf-8');
-      return applyPerspectiveFilters(filePath, currentRaw).then(() => {
-        // Phase 2.2: Action Item Extractor
-        const latestRaw = fs.readFileSync(filePath, 'utf-8');
-        return extractActionItems(filePath, latestRaw);
-      }).then((tasks) => {
-        // Phase 2.4: Calendar Draft Sync
+    runPipeline(filePath, [
+      async function generateMeta(fp) {
+        const raw = fs.readFileSync(fp, 'utf-8');
+        const { frontmatter: fm2 } = parseFrontmatter(raw);
+        if (fm2.title) return;
+        const meta = await generateNoteMeta(raw);
+        if (meta) {
+          injectMetaToFrontmatter(fp, meta);
+          if (meta.title) titleCache[filename] = meta.title;
+          console.log(`[Meta] Generated for ${filename}: ${meta.title}`);
+        }
+      },
+      async function nerStage(fp) {
+        // SR 지시: linkedEntry(원본 body)를 클로저 캡처 — 파일 재읽기 금지
+        const result = await indexNote(fp, linkedEntry);
+        if (result && result.nerResult && result.nerResult.entities) {
+          updateEntityFrontmatter(fp, result.nerResult.entities);
+        }
+      },
+      async function perspectiveStage(fp) {
+        const raw = fs.readFileSync(fp, 'utf-8');
+        await applyPerspectiveFilters(fp, raw);
+      },
+      async function actionItemsStage(fp) {
+        const raw = fs.readFileSync(fp, 'utf-8');
+        const tasks = await extractActionItems(fp, raw);
         if (tasks && tasks.length > 0) {
           syncToCalendarDraft(tasks).catch(e => console.warn('[Calendar] Sync failed:', e.message));
         }
-        // Phase 2.3: Consistency Auditor & RAG
-        const latestRaw = fs.readFileSync(filePath, 'utf-8');
-        return checkConsistency(filePath, latestRaw);
-      }).then(() => {
-        // Real-time RAG indexing
-        const finalRaw = fs.readFileSync(filePath, 'utf-8');
-        const { body: finalBody } = parseFrontmatter(finalRaw);
-        return updateVectorIndex(filePath, finalBody);
-      });
-    }).catch(err => {
-      console.warn('[Async Pipeline] Error:', err.message);
-      // Try remaining steps even if one fails
-      try {
-        const currentRaw = fs.readFileSync(filePath, 'utf-8');
-        applyPerspectiveFilters(filePath, currentRaw).then(() => {
-          const latestRaw = fs.readFileSync(filePath, 'utf-8');
-          extractActionItems(filePath, latestRaw).then((tasks) => {
-            if (tasks && tasks.length > 0) syncToCalendarDraft(tasks).catch(() => {});
-            const finalRaw = fs.readFileSync(filePath, 'utf-8');
-            checkConsistency(filePath, finalRaw).then(() => {
-              const { body: finalBody } = parseFrontmatter(finalRaw);
-              updateVectorIndex(filePath, finalBody).catch(() => {});
-            }).catch(() => {});
-          }).catch(() => {});
-        }).catch(() => {});
-      } catch (e) {}
-    });
+      },
+      async function consistencyStage(fp) {
+        const raw = fs.readFileSync(fp, 'utf-8');
+        await checkConsistency(fp, raw);
+      },
+      async function tldrStage(fp) {
+        // 원본 본문 길이 판정: linkedEntry 클로저 (AI 섹션 오염 없음)
+        if (linkedEntry.trim().length < 100) return;
+        const raw = fs.readFileSync(fp, 'utf-8');
+        const { frontmatter: fm, body } = parseFrontmatter(raw);
+        if (!fm.summary) return;
+        if (body.includes('> [!abstract]')) return; // 재삽입 루프 방지
+        const callout = `\n> [!abstract] 요약\n> ${fm.summary}\n\n`;
+        fs.writeFileSync(fp, serializeFrontmatter(fm) + callout + body.trimStart(), 'utf-8');
+      },
+      async function ragStage(fp) {
+        const raw = fs.readFileSync(fp, 'utf-8');
+        const { body: finalBody } = parseFrontmatter(raw);
+        await updateVectorIndex(fp, finalBody);
+      }
+    ]).catch(e => console.warn('[Pipeline] Unexpected error:', e.message));
   }
 
-  return { created: true, filename };
+  return { created: true, filename, filePath };
+}
+
+// Task emoji helpers (Obsidian Tasks plugin compatibility)
+const PRIORITY_EMOJI = { P1: '⏫', High: '⏫', P2: '🔼', Medium: '🔼', P3: '🔽', Low: '🔽' };
+
+function formatTaskToMarkdown(task) {
+  let line = `- [ ] ${task.title}`;
+  if (task.due) line += ` 📅${task.due}`;
+  if (task.priority && PRIORITY_EMOJI[task.priority]) line += ` ${PRIORITY_EMOJI[task.priority]}`;
+  return line;
+}
+
+// Parse task from markdown — supports emoji format and legacy [due:: date] format
+function parseTaskFromMarkdown(line) {
+  const emojiDue = line.match(/📅(\d{4}-\d{2}-\d{2})/);
+  const emojiSched = line.match(/⏳(\d{4}-\d{2}-\d{2})/);
+  const legacyDue = line.match(/\[due::\s*(\d{4}-\d{2}-\d{2})\]/);
+  const due = (emojiDue || emojiSched || legacyDue)?.[1] || null;
+  const priority = line.includes('⏫') ? 'High' : line.includes('🔼') ? 'Medium' : line.includes('🔽') ? 'Low' : null;
+  const titleMatch = line.match(/^-\s+\[[ x]\]\s+(.+?)(?:\s+(?:📅|⏳)\d{4}|$)/);
+  const title = titleMatch ? titleMatch[1].replace(/\[(?:due|priority)::[^\]]+\]/g, '').trim() : null;
+  if (!title) return null;
+  return { title, due, priority };
 }
 
 async function syncToCalendarDraft(tasks) {
@@ -2478,20 +2589,20 @@ ${maskedBody}
 ${maskedContext}`;
 
   try {
-    const geminiRes = await fetch(getGeminiApiUrl('pro'), {
+    const geminiRes = await fetch(getGeminiApiUrl('flash'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        contents: [{ parts: [{ text: prompt }] }], 
-        generationConfig: { temperature: 0.1, maxOutputTokens: 1024 } 
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 1024 }
       }),
       signal: AbortSignal.timeout(20000)
     });
-    
+
     if (!geminiRes.ok) return;
     const data = await geminiRes.json();
     const alert = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
-    
+
     if (alert && alert !== 'NONE' && alert.includes('Collision Check')) {
       const currentRaw = fs.readFileSync(filePath, 'utf-8');
       if (!currentRaw.includes('## ⚠️ Collision Check')) {
@@ -2570,13 +2681,7 @@ ${maskedBody.slice(0, 3000)}`;
       const { frontmatter: currentFm, body: currentBody } = parseFrontmatter(currentRaw);
       
       if (!currentBody.includes('## Tasks')) {
-        let taskListMd = '';
-        for (const t of tasks) {
-          let line = `- [ ] ${t.title}`;
-          if (t.due) line += ` [due:: ${t.due}]`;
-          if (t.priority) line += ` [priority:: ${t.priority}]`;
-          taskListMd += line + '\n';
-        }
+        const taskListMd = tasks.map(t => formatTaskToMarkdown(t)).join('\n') + '\n';
         const updatedBody = currentBody.trim() + '\n\n## Tasks\n\n' + taskListMd + '\n';
         fs.writeFileSync(filePath, serializeFrontmatter(currentFm) + updatedBody, 'utf-8');
         console.log(`[Tasks] Action items added to ${path.basename(filePath)}`);
@@ -2589,75 +2694,101 @@ ${maskedBody.slice(0, 3000)}`;
   return [];
 }
 
-async function applyPerspectiveFilters(filePath, raw) {
-  const { frontmatter, body } = parseFrontmatter(raw);
-  
-  // Skip if already analyzed or too short
-  if (body.includes('## 🧠 PIE Perspective') || body.length < 20) return;
+// Multi-Lens config — area-based lens selection
+// 렌즈 추가/수정 시 server.js 수정 없이 config/lenses.json만 편집하면 됩니다.
+const PERSPECTIVE_LENSES = (() => {
+  try { return require('./config/lenses.json'); }
+  catch (e) { console.warn('[PIE] config/lenses.json 로드 실패, 기본값 사용:', e.message); return {}; }
+})();
 
-  // Apply Privacy Shield before sending to external API
-  const maskedBody = applyPrivacyShield(body);
+function buildPerspectivePrompt(lens, lensName, maskedBody) {
+  if (lens) {
+    const sectionList = lens.sections.map(s => `- ${s}`).join('\n');
+    return `당신은 다음 노트를 **${lensName}** 관점으로 분석하는 전문가입니다.
 
-  const prompt = `당신은 사용자의 **전략적 지배자이자 전문 FP&A(Financial Planning & Analysis) 파트너인 PIE Engine v2.0**입니다. 
-당신의 페르소나는 **'11년 차 대기업 재무팀 매니저이자, 두 아이를 키우며 삶의 균형을 치열하게 고민하는 아빠'**입니다.
-
-분석 원칙: 
-- "기록된 사실 뒤의 '왜(Why)'와 '어떻게(How)'를 집요하게 파고드세요."
-- 사용자가 스스로 생각하지 못한 **날카로운 재무적 질문**을 던지거나, **가정생활과 업무의 실질적 충돌**을 선제적으로 감지하여 제안하세요.
-- 과거의 지식(예: 게임 전략, 취미 등)을 현재의 업무나 삶에 창의적으로 대입하는 **크로스 도메인 통찰**을 제공하세요.
-
-다음 5가지 전략 필터로 분석을 수행하세요:
-1. **이해관계자 (#stakeholder)**: 발언자의 숨은 의도, KPI 충돌 지점(예: 마케팅 GMV vs 재무 마진율 CM1) 및 협상 우위 분석.
-2. **미래 시그널 (#forecast)**: 원자재가 인상, 인력 채용 등 기록이 암시하는 연쇄 반응 추론 및 리스크/기회 예고.
-3. **의사결정 내러티브 (#decision)**: 선택의 논리적 근거, 포기한 기회비용(ROI), 과거의 원칙(예: 채용 동결)과의 일치 여부.
-4. **비판적 검토 (#devils_advocates)**: 사용자의 가설을 뒤집는 반론, 치명적 약점 지적, 그리고 이를 방어할 논리 구축.
-5. **라이프-워크 링크 (#lifework)**: 아이의 유치원 식단(매운 음식 여부), 아파트 정전, 가족 행사 등 개인적 맥락이 업무 효율과 멘탈에 미치는 실질적 영향 및 조정 제안.
+다음 섹션들에 집중하여 분석하세요:
+${sectionList}
 
 출력 형식:
-- 반드시 '## 🧠 PIE Perspective'라는 섹션 제목 아래에 작성하세요.
-- 각 관점 중 **전략적으로 가장 가치 있는 2~3가지 항목**에 집중하여 깊이 있게 서술하세요.
-- 재무 전문가답게 'CM1 마진', 'ROI', '리소스 배분' 등의 전문 용어를 정확하게 사용하세요.
-- 각 항목 끝에 사용자가 자문해봐야 할 **'지배적 질문(Dominant Question)'**을 하나씩 포함하세요.
-- 한국어로 냉철하면서도 신뢰감 있는 전문적인 톤을 유지하세요.
+- 반드시 '## 🧠 ${lensName}' 섹션 제목 아래에 작성하세요.
+- 각 섹션을 마크다운 서브헤딩으로 구분하세요.
+- 한국어로 전문적이고 실용적인 톤을 유지하세요.
+- 각 항목 끝에 핵심 질문(Dominant Question)을 하나 포함하세요.
 
 노트 내용:
 ${maskedBody.slice(0, 6000)}`;
+  }
+  return `당신은 사용자의 **전략적 지배자이자 전문 FP&A 파트너인 PIE Engine v2.0**입니다.
+당신의 페르소나는 **'11년 차 대기업 재무팀 매니저이자, 두 아이를 키우며 삶의 균형을 치열하게 고민하는 아빠'**입니다.
+
+다음 5가지 전략 필터로 분석을 수행하세요:
+1. **이해관계자 (#stakeholder)**: 숨은 의도, KPI 충돌 지점 및 협상 우위 분석.
+2. **미래 시그널 (#forecast)**: 기록이 암시하는 연쇄 반응 추론 및 리스크/기회 예고.
+3. **의사결정 내러티브 (#decision)**: 선택의 근거, 기회비용(ROI), 과거 원칙과의 일치 여부.
+4. **비판적 검토 (#devils_advocates)**: 반론, 치명적 약점, 방어 논리 구축.
+5. **라이프-워크 링크 (#lifework)**: 개인적 맥락이 업무 효율과 멘탈에 미치는 영향.
+
+출력 형식:
+- 반드시 '## 🧠 PIE Perspective' 섹션 제목 아래에 작성하세요.
+- 가장 가치 있는 2~3가지 항목에 집중하여 깊이 있게 서술하세요.
+- 재무 전문 용어(CM1 마진, ROI 등)를 정확하게 사용하세요.
+- 각 항목 끝에 '지배적 질문(Dominant Question)'을 하나씩 포함하세요.
+- 한국어로 냉철하고 신뢰감 있는 톤을 유지하세요.
+
+노트 내용:
+${maskedBody.slice(0, 6000)}`;
+}
+
+async function applyPerspectiveFilters(filePath, raw) {
+  const { frontmatter, body } = parseFrontmatter(raw);
+
+  // Skip check: use analyzed_lenses instead of body content
+  const analyzedLenses = Array.isArray(frontmatter.analyzed_lenses) ? frontmatter.analyzed_lenses : [];
+  if (analyzedLenses.length > 0 || body.length < 20) return;
+
+  const area = frontmatter.area || '';
+  const lens = PERSPECTIVE_LENSES[area] || null;
+  const lensKey = lens ? area : 'default';
+  const lensName = lens ? lens.name : 'PIE Perspective';
+
+  const maskedBody = applyPrivacyShield(body);
+  const prompt = buildPerspectivePrompt(lens, lensName, maskedBody);
 
   try {
-    const geminiRes = await fetch(getGeminiApiUrl('pro'), {
+    const geminiRes = await fetch(getGeminiApiUrl('flash'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        contents: [{ parts: [{ text: prompt }] }], 
-        generationConfig: { temperature: 0.7, maxOutputTokens: 2048 } 
-      }),
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.7, maxOutputTokens: 2048 } }),
       signal: AbortSignal.timeout(20000)
     });
-    
+
     if (!geminiRes.ok) return;
     const data = await geminiRes.json();
     const perspective = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
-    
-    if (perspective && perspective.includes('PIE Perspective')) {
-      // Re-read file to avoid overwriting changes (like title injection)
-      const currentRaw = fs.readFileSync(filePath, 'utf-8');
-      const { frontmatter: currentFm, body: currentBody } = parseFrontmatter(currentRaw);
 
-      if (!currentBody.includes('## 🧠 PIE Perspective')) {
-        // Extract PIE hashtags from AI response and inject into frontmatter tags
-        const PIE_TAGS = ['forecast', 'stakeholder', 'decision', 'devils_advocates', 'lifework'];
-        const foundTags = PIE_TAGS.filter(tag => perspective.includes(`#${tag}`));
-        if (foundTags.length > 0) {
-          const existingTags = Array.isArray(currentFm.tags) ? currentFm.tags : (currentFm.tags ? [currentFm.tags] : []);
-          currentFm.tags = [...new Set([...existingTags, ...foundTags])];
-          console.log(`[PIE] Tags injected: ${foundTags.join(', ')}`);
-        }
+    if (!perspective || (!perspective.includes(lensName) && !perspective.includes('PIE Perspective'))) return;
 
-        const updatedBody = currentBody.trim() + '\n\n' + perspective + '\n';
-        fs.writeFileSync(filePath, serializeFrontmatter(currentFm) + updatedBody, 'utf-8');
-        console.log(`[PIE] Perspective added to ${path.basename(filePath)}`);
+    // Re-read to avoid race condition
+    const currentRaw = fs.readFileSync(filePath, 'utf-8');
+    const { frontmatter: currentFm, body: currentBody } = parseFrontmatter(currentRaw);
+
+    const currentLenses = Array.isArray(currentFm.analyzed_lenses) ? currentFm.analyzed_lenses : [];
+    if (currentLenses.length > 0) return;
+
+    if (!lens) {
+      const PIE_TAGS = ['forecast', 'stakeholder', 'decision', 'devils_advocates', 'lifework'];
+      const foundTags = PIE_TAGS.filter(tag => perspective.includes(`#${tag}`));
+      if (foundTags.length > 0) {
+        const existingTags = Array.isArray(currentFm.tags) ? currentFm.tags : (currentFm.tags ? [currentFm.tags] : []);
+        currentFm.tags = [...new Set([...existingTags, ...foundTags])];
+        console.log(`[PIE] Tags injected: ${foundTags.join(', ')}`);
       }
     }
+
+    currentFm.analyzed_lenses = [lensKey];
+    const updatedBody = currentBody.trim() + '\n\n' + perspective + '\n';
+    fs.writeFileSync(filePath, serializeFrontmatter(currentFm) + updatedBody, 'utf-8');
+    console.log(`[PIE] ${lensName} added to ${path.basename(filePath)}`);
   } catch (e) {
     console.error('[PIE] Analysis failed:', e.message);
   }
@@ -3542,13 +3673,7 @@ ${transcriptInput}`);
 
     // Add extracted tasks to body
     if (geminiResult && geminiResult.tasks && geminiResult.tasks.length > 0) {
-      body += `\n\n## Tasks\n\n`;
-      for (const task of geminiResult.tasks) {
-        let taskStr = `- [ ] ${task.title}`;
-        if (task.due) taskStr += ` [due:: ${task.due}]`;
-        if (task.priority) taskStr += ` [priority:: ${task.priority}]`;
-        body += `${taskStr}\n`;
-      }
+      body += `\n\n## Tasks\n\n` + geminiResult.tasks.map(t => formatTaskToMarkdown(t)).join('\n') + '\n';
     }
 
     const extraFrontmatter = {
@@ -3666,13 +3791,7 @@ app.post('/api/process/image', auth, aiLimiter, uploadLimiter, upload.single('fi
 
     // Add extracted tasks to body
     if (analysis.tasks && analysis.tasks.length > 0) {
-      body += `\n\n## Tasks\n\n`;
-      for (const task of analysis.tasks) {
-        let taskStr = `- [ ] ${task.title}`;
-        if (task.due) taskStr += ` [due:: ${task.due}]`;
-        if (task.priority) taskStr += ` [priority:: ${task.priority}]`;
-        body += `${taskStr}\n`;
-      }
+      body += `\n\n## Tasks\n\n` + analysis.tasks.map(t => formatTaskToMarkdown(t)).join('\n') + '\n';
     }
 
     const tags = ['image', ...(analysis.suggested_tags || [])];
@@ -3902,14 +4021,7 @@ function buildUrlNoteBody(summary, meta, url) {
 
   // Add extracted tasks to body
   if (summary.tasks && summary.tasks.length > 0) {
-    body += `## Tasks\n\n`;
-    for (const task of summary.tasks) {
-      let taskStr = `- [ ] ${task.title}`;
-      if (task.due) taskStr += ` [due:: ${task.due}]`;
-      if (task.priority) taskStr += ` [priority:: ${task.priority}]`;
-      body += `${taskStr}\n`;
-    }
-    body += '\n';
+    body += `## Tasks\n\n` + summary.tasks.map(t => formatTaskToMarkdown(t)).join('\n') + '\n\n';
   }
 
   if (summary.keywords && summary.keywords.length) body += `**키워드**: ${summary.keywords.join(', ')}\n\n`;
@@ -3958,7 +4070,7 @@ app.post('/api/todo', auth, (req, res) => {
   const { text, date } = req.body;
   if (!text) return res.status(400).json({ error: 'text required' });
   const noteDate = date || new Date().toISOString().split('T')[0];
-  const entry = `- [ ] ${text}`;
+  const entry = formatTaskToMarkdown({ title: text });
   const result = createAtomicNote(noteDate, 'todo', entry, ['todo']);
   res.json({ ok: true, ...result });
 });
@@ -4169,10 +4281,10 @@ app.post('/api/notes/backfill-titles', auth, async (req, res) => {
     for (const f of batch) {
       try {
         const raw = fs.readFileSync(path.join(NOTES_DIR, f), 'utf-8');
-        const title = await generateNoteTitle(raw);
-        if (title) {
-          injectTitleToFrontmatter(path.join(NOTES_DIR, f), raw, title);
-          titleCache[f] = title;
+        const meta = await generateNoteMeta(raw);
+        if (meta) {
+          injectMetaToFrontmatter(path.join(NOTES_DIR, f), meta);
+          if (meta.title) titleCache[f] = meta.title;
           updated++;
         }
         await new Promise(r => setTimeout(r, 300)); // rate limit
@@ -4185,32 +4297,322 @@ app.post('/api/notes/backfill-titles', auth, async (req, res) => {
   }
 });
 
-async function generateNoteTitle(rawOrBody) {
+const NOTE_META_SCHEMA = {
+  type: 'object',
+  properties: {
+    title:    { type: 'string', description: '10~30자 한줄 제목' },
+    summary:  { type: 'string', description: '3줄 이내 핵심 요약' },
+    type:     { type: 'string', enum: ['meeting-note', 'idea', 'task-list', 'quote', 'voice-memo'] },
+    mood:     { type: 'string', enum: ['Positive', 'Neutral', 'Negative'] },
+    priority: { type: 'string', enum: ['High', 'Medium', 'Low'] },
+    area:     { type: 'string', enum: ['Career', 'Health', 'Finance', 'Family', 'Personal'] },
+    project:  { type: 'string', description: '프로젝트명 (없으면 빈 문자열)' }
+  },
+  required: ['title', 'summary', 'type', 'mood', 'priority']
+};
+
+async function generateNoteMeta(rawOrBody) {
   const body = rawOrBody.startsWith('---') ? parseFrontmatter(rawOrBody).body : rawOrBody;
-  // Apply Privacy Shield before sending to external API
   const maskedBody = applyPrivacyShield(body);
-  const prompt = `다음 노트 본문을 읽고 10~30자의 한줄 제목을 만들어줘. 제목만 출력: ${maskedBody.slice(0, 1500)}`;
+  const prompt = `다음 노트를 분석하여 메타데이터를 JSON으로 반환하세요.
+- title: 10~30자 한줄 제목
+- summary: 3줄 이내 핵심 요약
+- type: meeting-note|idea|task-list|quote|voice-memo
+- mood: Positive|Neutral|Negative
+- priority: High|Medium|Low
+- area: Career|Health|Finance|Family|Personal (가장 관련도 높은 단일값, 없으면 생략)
+- project: 프로젝트명 (없으면 생략)
+
+노트 내용:
+${maskedBody.slice(0, 1500)}`;
   try {
     const geminiRes = await fetch(getGeminiApiUrl('lite'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.4, maxOutputTokens: 60 } }),
-      signal: AbortSignal.timeout(8000)
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: 'application/json', responseSchema: NOTE_META_SCHEMA, temperature: 0.3, maxOutputTokens: 256 }
+      }),
+      signal: AbortSignal.timeout(10000)
     });
     if (!geminiRes.ok) return null;
     const data = await geminiRes.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) return null;
+    const meta = JSON.parse(text);
+    // Field-level privacy shield on output (defensive)
+    if (meta.title)   meta.title   = applyPrivacyShield(meta.title);
+    if (meta.summary) meta.summary = applyPrivacyShield(meta.summary);
+    if (meta.project) meta.project = applyPrivacyShield(meta.project);
+    return meta;
   } catch (e) {
     return null;
   }
 }
 
+// Kept for backfill backward-compat
+async function generateNoteTitle(rawOrBody) {
+  const meta = await generateNoteMeta(rawOrBody);
+  return meta ? meta.title : null;
+}
+
+function injectMetaToFrontmatter(filePath, meta) {
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  const { frontmatter: fm, body } = parseFrontmatter(raw);
+  if (meta.title) {
+    fm.title = meta.title;
+    if (!Array.isArray(fm.aliases)) fm.aliases = [];
+    if (!fm.aliases.includes(meta.title)) fm.aliases.push(meta.title);
+  }
+  if (meta.summary)  fm.summary  = meta.summary;
+  if (meta.type)     fm.type     = meta.type;
+  if (meta.mood)     fm.mood     = meta.mood;
+  if (meta.priority) fm.priority = meta.priority;
+  if (meta.area)     fm.area     = meta.area;
+  if (meta.project)  fm.project  = meta.project;
+  fs.writeFileSync(filePath, serializeFrontmatter(fm) + body, 'utf-8');
+}
+
 function injectTitleToFrontmatter(filePath, raw, title) {
-  const { frontmatter, body } = parseFrontmatter(raw);
-  frontmatter.title = title;
-  if (!frontmatter.aliases) frontmatter.aliases = [title];
-  else if (!frontmatter.aliases.includes(title)) frontmatter.aliases.push(title);
-  fs.writeFileSync(filePath, serializeFrontmatter(frontmatter) + body, 'utf-8');
+  injectMetaToFrontmatter(filePath, { title });
+}
+
+function updateEntityFrontmatter(filePath, entities) {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const { frontmatter: fm, body } = parseFrontmatter(raw);
+    if (entities.persons  && entities.persons.length)  fm.participants = entities.persons.map(n => `[[${n}]]`);
+    if (entities.projects && entities.projects.length) fm.projects     = entities.projects.map(n => `[[${n}]]`);
+    if (entities.places   && entities.places.length)   fm.places       = entities.places.map(n => `[[${n}]]`);
+    fs.writeFileSync(filePath, serializeFrontmatter(fm) + body, 'utf-8');
+  } catch (e) {
+    console.warn('[NER] updateEntityFrontmatter failed:', e.message);
+  }
+}
+
+// ============================================================
+// Note: Reanalyze (reset analyzed_lenses + re-run perspective)
+// ============================================================
+app.post('/api/note/reanalyze', auth, async (req, res) => {
+  const { filename, lens } = req.body;
+  if (!filename) return res.status(400).json({ error: 'filename required' });
+  if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    return res.status(400).json({ error: 'Invalid filename' });
+  }
+  const filePath = findVVNote(filename);
+  if (!filePath) return res.status(404).json({ error: 'Note not found' });
+
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  const { frontmatter: fm, body } = parseFrontmatter(raw);
+  fm.analyzed_lenses = [];
+  if (lens) fm.area = lens;
+  fs.writeFileSync(filePath, serializeFrontmatter(fm) + body, 'utf-8');
+
+  const freshRaw = fs.readFileSync(filePath, 'utf-8');
+  await applyPerspectiveFilters(filePath, freshRaw);
+  res.json({ ok: true, filename });
+});
+
+// ============================================================
+// F7 — Push Subscription endpoints (Sub 2-2)
+// ============================================================
+app.get('/api/push/vapid-public-key', auth, (req, res) => {
+  const key = process.env.VAPID_PUBLIC_KEY;
+  if (!key) return res.status(503).json({ error: 'VAPID not initialized' });
+  res.json({ publicKey: key });
+});
+
+app.post('/api/push/subscribe', auth, async (req, res) => {
+  const sub = req.body;
+  if (!sub || !sub.endpoint) return res.status(400).json({ error: 'Invalid subscription' });
+  await _subQueue.add(() => {
+    const subs = loadSubscriptions();
+    if (!subs.find(s => s.endpoint === sub.endpoint)) {
+      subs.push(sub);
+      saveSubscriptions(subs);
+    }
+  });
+  res.status(201).json({ ok: true });
+});
+
+app.delete('/api/push/unsubscribe', auth, async (req, res) => {
+  const { endpoint } = req.body;
+  if (!endpoint) return res.status(400).json({ error: 'endpoint required' });
+  await _subQueue.add(() => {
+    const subs = loadSubscriptions().filter(s => s.endpoint !== endpoint);
+    saveSubscriptions(subs);
+  });
+  res.json({ ok: true });
+});
+
+// ============================================================
+// Entity Indexer — resync endpoint
+// ============================================================
+app.get('/api/entity/resync', auth, (req, res) => {
+  resyncEntityMap().catch(e => console.warn('[EntityIndexer] resync error:', e.message));
+  res.json({ status: 'ok', counts: { persons: 0, projects: 0, places: 0 } });
+});
+
+// ============================================================
+// F7 — Daily Briefing helpers (Sub 2-3)
+// ============================================================
+const BRIEFING_LOG_PATH = path.join(__dirname, 'briefing-log.json');
+
+function getTodayKST() {
+  const kst = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+  const y = kst.getFullYear();
+  const m = String(kst.getMonth() + 1).padStart(2, '0');
+  const d = String(kst.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function getBriefingSentPath(dateKey) {
+  return path.join(__dirname, `.briefing-sent-${dateKey}`);
+}
+
+async function gatherCalendarEvents(dateKey) {
+  try {
+    const token = await getAccessToken();
+    if (!token) return { events: [], attendees: [] };
+    const start = new Date(dateKey + 'T00:00:00+09:00').toISOString();
+    const end   = new Date(dateKey + 'T23:59:59+09:00').toISOString();
+    const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(start)}&timeMax=${encodeURIComponent(end)}&singleEvents=true&orderBy=startTime`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) return { events: [], attendees: [] };
+    const data = await res.json();
+    const events = data.items || [];
+    const attendees = [...new Set(events.flatMap(e =>
+      (e.attendees || []).map(a => a.displayName || a.email).filter(Boolean)
+    ))];
+    return { events, attendees };
+  } catch (e) {
+    console.warn('[Briefing] Calendar fetch failed:', e.message);
+    return { events: [], attendees: [] };
+  }
+}
+
+function gatherPendingTasks() {
+  try {
+    const today = getTodayKST();
+    const tasks = [];
+    for (const f of fs.readdirSync(NOTES_DIR).filter(f => f.endsWith('.md'))) {
+      try {
+        for (const line of fs.readFileSync(path.join(NOTES_DIR, f), 'utf-8').split('\n')) {
+          if (!line.match(/^- \[ \]/)) continue;
+          const dateStr = (line.match(/📅(\d{4}-\d{2}-\d{2})/) || line.match(/⏳(\d{4}-\d{2}-\d{2})/))?.[ 1];
+          if (!dateStr || dateStr <= today) tasks.push(line.trim());
+        }
+      } catch (_) {}
+    }
+    return tasks.slice(0, 10);
+  } catch (e) {
+    console.warn('[Briefing] Task gather failed:', e.message);
+    return [];
+  }
+}
+
+async function generateBriefingText({ events, attendees, tasks }) {
+  try {
+    const evText = events.length
+      ? events.map(e => `- ${e.summary || '(무제)'} ${e.start?.dateTime ? new Date(e.start.dateTime).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : ''}`).join('\n')
+      : '일정 없음';
+    const prompt = `오늘 하루 브리핑을 간결하게 한국어로 3문단 이내로 작성해라.\n\n오늘 일정:\n${evText}\n\n관련 인물: ${attendees.join(', ') || '없음'}\n\n마감 임박 할일:\n${tasks.join('\n') || '없음'}`;
+    const res = await fetch(getGeminiApiUrl('flash'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+    });
+    if (!res.ok) throw new Error(`Gemini HTTP ${res.status}`);
+    const data = await res.json();
+    return data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  } catch (e) {
+    console.warn('[Briefing] Gemini failed:', e.message);
+    return '';
+  }
+}
+
+async function prependToBriefingNote(dateKey, content) {
+  const filename = `${dateKey}_000000_briefing.md`;
+  const filePath = path.join(NOTES_DIR, filename);
+  return getPipelineQueue(filePath).add(() => {
+    const callout = `> [!info] 📋 데일리 브리핑\n${content.split('\n').map(l => '> ' + l).join('\n')}\n\n`;
+    if (fs.existsSync(filePath)) {
+      const { frontmatter: fm, body } = parseFrontmatter(fs.readFileSync(filePath, 'utf-8'));
+      fs.writeFileSync(filePath, serializeFrontmatter(fm) + '\n' + callout + body.trimStart(), 'utf-8');
+    } else {
+      const fm = { '날짜': dateKey, 'source_type': 'briefing', '유형': 'briefing', 'tags': ['vaultvoice', 'briefing'], 'title': `${dateKey} 데일리 브리핑` };
+      fs.writeFileSync(filePath, serializeFrontmatter(fm) + '\n' + callout, 'utf-8');
+    }
+  });
+}
+
+async function sendPushToAll(payload) {
+  if (!webpush) return { pushedCount: 0 };
+  const subs = loadSubscriptions();
+  let pushedCount = 0;
+  const stale = [];
+  for (const sub of subs) {
+    try {
+      await webpush.sendNotification(sub, JSON.stringify(payload));
+      pushedCount++;
+    } catch (e) {
+      // SR #6: 410 Gone / 404 → auto-remove stale subscriptions
+      if (e.statusCode === 410 || e.statusCode === 404) stale.push(sub.endpoint);
+      else console.warn('[Push] Send failed:', e.message);
+    }
+  }
+  if (stale.length) {
+    await _subQueue.add(() => saveSubscriptions(loadSubscriptions().filter(s => !stale.includes(s.endpoint))));
+    console.log(`[Push] Removed ${stale.length} stale subscriptions`);
+  }
+  return { pushedCount };
+}
+
+async function runDailyBriefing() {
+  const dateKey  = getTodayKST();
+  const sentPath = getBriefingSentPath(dateKey);
+  if (fs.existsSync(sentPath)) return { alreadySent: true, dateKey };
+
+  // 1. Calendar (independent try/catch)
+  let calData = { events: [], attendees: [] };
+  try { calData = await gatherCalendarEvents(dateKey); } catch (e) { console.warn('[Briefing] Step1:', e.message); }
+
+  // 2. Person notes (independent try/catch)
+  let attendees = [];
+  try {
+    attendees = calData.attendees.map(name => {
+      const fp = path.join(NOTES_DIR, name.replace(/[\\/:*?"<>|]/g, '_') + '.md');
+      return fs.existsSync(fp) ? `[[${name}]]` : name;
+    });
+  } catch (e) { console.warn('[Briefing] Step2:', e.message); }
+
+  // 3. Pending tasks (independent try/catch)
+  let tasks = [];
+  try { tasks = gatherPendingTasks(); } catch (e) { console.warn('[Briefing] Step3:', e.message); }
+
+  // 4. Gemini briefing (independent try/catch)
+  let briefing = '';
+  try { briefing = await generateBriefingText({ events: calData.events, attendees, tasks }); } catch (e) { console.warn('[Briefing] Step4:', e.message); }
+
+  // 5. Prepend to daily note (independent try/catch)
+  try { await prependToBriefingNote(dateKey, briefing || '데이터를 가져오지 못했습니다.'); } catch (e) { console.warn('[Briefing] Step5:', e.message); }
+
+  // 6. Web Push (independent try/catch)
+  let pushResult = { pushedCount: 0 };
+  try {
+    pushResult = await sendPushToAll({ title: `📋 ${dateKey} 브리핑`, body: (briefing || '').slice(0, 120), icon: '/icon-192.png' });
+  } catch (e) { console.warn('[Briefing] Step6:', e.message); }
+
+  // Mark sent only if briefing content was generated (prevent blocking same-day retry on Step4/5 failure)
+  if (!briefing) return { briefing: '', pushedCount: 0, dateKey };
+  fs.writeFileSync(sentPath, new Date().toISOString(), 'utf-8');
+  try {
+    const logs = fs.existsSync(BRIEFING_LOG_PATH) ? JSON.parse(fs.readFileSync(BRIEFING_LOG_PATH, 'utf-8')) : [];
+    logs.push({ dateKey, sentAt: new Date().toISOString(), pushedCount: pushResult.pushedCount, events: calData.events.length, tasks: tasks.length });
+    fs.writeFileSync(BRIEFING_LOG_PATH, JSON.stringify(logs.slice(-30), null, 2), 'utf-8');
+  } catch (e) { console.warn('[Briefing] Log failed:', e.message); }
+
+  return { briefing, pushedCount: pushResult.pushedCount, dateKey };
 }
 
 // ============================================================
@@ -4258,6 +4660,29 @@ app.listen(PORT, '0.0.0.0', () => {
     loadTitleCache();
     console.log(`  Title cache: ${Object.keys(titleCache).length} titles loaded`);
   } catch (e) { console.log('  Title cache: warm-up failed -', e.message); }
+
+  // Entity Indexer — F5 background scan (non-blocking)
+  if (GEMINI_API_KEY && GEMINI_API_KEY !== 'your_key_here') {
+    initEntityIndexer(VAULT_PATH);
+    console.log('  Entity Indexer: background scan started');
+  }
+
+  // Web Push VAPID — F7
+  initVapid();
+
+  // Daily Briefing cron 07:30 KST + catch-up (SR #2)
+  if (schedule) {
+    schedule.scheduleJob({ hour: 7, minute: 30, tz: 'Asia/Seoul' }, () => {
+      runDailyBriefing().catch(e => console.warn('[Briefing] Cron failed:', e.message));
+    });
+    // Catch-up: if server starts after 07:30 and briefing not yet sent
+    const kstNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+    if ((kstNow.getHours() > 7 || (kstNow.getHours() === 7 && kstNow.getMinutes() >= 30))
+        && !fs.existsSync(getBriefingSentPath(getTodayKST()))) {
+      setImmediate(() => runDailyBriefing().catch(e => console.warn('[Briefing] Catch-up failed:', e.message)));
+    }
+    console.log('  Daily Briefing: cron 07:30 KST registered');
+  }
 
   // Show LAN IP
   const os = require('os');

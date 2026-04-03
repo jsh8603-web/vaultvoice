@@ -13,10 +13,15 @@
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
     "express-rate-limit": "^7.1.0",
+    "gray-matter": "^4.0.3",
+    "js-yaml": "^4.1.1",
     "jsdom": "^29.0.1",
     "multer": "^1.4.5-lts.1",
+    "node-schedule": "^2.1.1",
     "openai": "^4.0.0",
+    "p-queue": "^7.4.1",
     "uuid": "^9.0.0",
+    "web-push": "^3.6.7",
     "youtube-captions-scraper": "^2.0.3"
   },
   "devDependencies": {
