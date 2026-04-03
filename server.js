@@ -81,7 +81,8 @@ function getGeminiModel(tier = 'flash') {
 
 function getGeminiApiUrl(tier = 'flash') {
   const modelId = GEMINI_TIERS[tier] || GEMINI_TIERS.flash;
-  return `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${GEMINI_API_KEY}`;
+  const baseUrl = process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta';
+  return `${baseUrl}/models/${modelId}:generateContent?key=${GEMINI_API_KEY}`;
 }
 
 // ============================================================
@@ -608,11 +609,14 @@ app.post('/api/ai/summarize', async (req, res) => {
     return res.status(400).json({ error: 'Content is required' });
   }
 
+  // Apply Privacy Shield before sending to external API
+  const maskedContent = applyPrivacyShield(content);
+
   let prompt;
   if (action === 'summarize') {
-    prompt = `다음은 ${date || '오늘'}의 일일노트 내용입니다. 3~5문장으로 한국어로 핵심을 요약해주세요. 마크다운 없이 일반 텍스트로 답변하세요.\n\n${content}`;
+    prompt = `다음은 ${date || '오늘'}의 일일노트 내용입니다. 3~5문장으로 한국어로 핵심을 요약해주세요. 마크다운 없이 일반 텍스트로 답변하세요.\n\n${maskedContent}`;
   } else if (action === 'auto-tags') {
-    prompt = `다음 메모의 주제/카테고리를 나타내는 태그를 정확히 1~2개 추천하세요. 규칙: 1) 메모의 핵심 주제를 대표하는 명사형 태그 2) 구체적이고 의미있는 단어 (예: 회의, 논문, 진료, 코딩, 운동) 3) "작성", "수정" 같은 동작어 금지. JSON 배열로만 답변. 예: ["회의", "AI프로젝트"]\n\n${content}`;
+    prompt = `다음 메모의 주제/카테고리를 나타내는 태그를 정확히 1~2개 추천하세요. 규칙: 1) 메모의 핵심 주제를 대표하는 명사형 태그 2) 구체적이고 의미있는 단어 (예: 회의, 논문, 진료, 코딩, 운동) 3) "작성", "수정" 같은 동작어 금지. JSON 배열로만 답변. 예: ["회의", "AI프로젝트"]\n\n${maskedContent}`;
   } else {
     return res.status(400).json({ error: 'Invalid action' });
   }
@@ -665,6 +669,9 @@ app.post('/api/ai/detect-event', async (req, res) => {
     return res.status(400).json({ error: 'content and referenceDate are required' });
   }
 
+  // Apply Privacy Shield before sending to external API
+  const maskedContent = applyPrivacyShield(content);
+
   const prompt = `당신은 메모에서 일정을 추출하는 어시스턴트입니다.
 오늘 날짜: ${referenceDate}
 
@@ -678,7 +685,7 @@ app.post('/api/ai/detect-event', async (req, res) => {
 종일 일정: {"detected":true,"event":{"title":"제목","date":"YYYY-MM-DD","startTime":"","endTime":"","isAllDay":true}}
 일정 없음: {"detected":false}
 
-메모: "${content}"`;
+메모: "${maskedContent}"`;
 
   try {
     const geminiRes = await fetch(getGeminiApiUrl('lite'), {
@@ -1356,11 +1363,14 @@ function buildContents(history, currentMessage) {
   const trimmed = (history || []).slice(-20); // 20 items = 10 user+model pairs max
   for (const msg of trimmed) {
     if (msg.role === 'user' || msg.role === 'model') {
-      contents.push({ role: msg.role, parts: [{ text: msg.text }] });
+      // Apply Privacy Shield to history
+      const maskedText = applyPrivacyShield(msg.text);
+      contents.push({ role: msg.role, parts: [{ text: maskedText }] });
     }
   }
-  // Add current user message
-  contents.push({ role: 'user', parts: [{ text: currentMessage }] });
+  // Add current user message with Privacy Shield
+  const maskedCurrent = applyPrivacyShield(currentMessage);
+  contents.push({ role: 'user', parts: [{ text: maskedCurrent }] });
   return contents;
 }
 
@@ -1519,8 +1529,10 @@ const VECTOR_FILE = path.join(VAULT_PATH, '.vectors.json');
 
 async function getEmbedding(text) {
   if (!text || !text.trim()) return null;
+  // Apply Privacy Shield before sending to external API
+  const maskedText = applyPrivacyShield(text);
   // Limit text size for embedding model
-  const chunk = text.slice(0, 8000); 
+  const chunk = maskedText.slice(0, 8000); 
   
   try {
     const res = await fetch(
@@ -1818,12 +1830,26 @@ app.get('/api/calendar/events', async (req, res) => {
 app.post('/api/calendar/add', async (req, res) => {
   const token = await getAccessToken();
   if (!token) return res.status(401).json({ error: 'Not connected' });
-  
+
   const { summary, start, end, isAllDay } = req.body;
 
   try {
-    const startObj = isAllDay ? { date: start } : { dateTime: start };
-    const endObj = isAllDay ? { date: end } : { dateTime: end };
+    let startObj, endObj;
+    if (isAllDay) {
+      startObj = { date: start };
+      // Google Calendar all-day end date must be strictly after start date
+      if (start === end) {
+        const d = new Date(start + 'T00:00:00');
+        d.setDate(d.getDate() + 1);
+        endObj = { date: d.toISOString().slice(0, 10) };
+      } else {
+        endObj = { date: end };
+      }
+    } else {
+      startObj = { dateTime: start };
+      endObj = { dateTime: end };
+    }
+
     const calRes = await fetch(
       'https://www.googleapis.com/calendar/v3/calendars/primary/events',
       {
@@ -1835,11 +1861,12 @@ app.post('/api/calendar/add', async (req, res) => {
         body: JSON.stringify({
           summary,
           start: startObj,
-          end: endObj
+          end: endObj,
+          description: 'VaultVoice에서 등록된 일정입니다.'
         })
       }
     );
-    
+
     if (!calRes.ok) return res.status(calRes.status).json({ error: await calRes.text() });
     
     const data = await calRes.json();
@@ -2137,8 +2164,12 @@ function parseFrontmatter(content) {
     const kvMatch = line.match(/^(\w+[\w\s]*?):\s*(.*)$/);
     if (kvMatch) {
       currentKey = kvMatch[1].trim();
-      const val = kvMatch[2].trim();
-      if (val) {
+      let val = kvMatch[2].trim();
+      
+      // Support for inline array [a, b, c]
+      if (val.startsWith('[') && val.endsWith(']')) {
+        fm[currentKey] = val.slice(1, -1).split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+      } else if (val) {
         fm[currentKey] = val;
       } else {
         fm[currentKey] = [];
@@ -2157,9 +2188,13 @@ function serializeFrontmatter(fm) {
   let out = '---\n';
   for (const [key, val] of Object.entries(fm)) {
     if (Array.isArray(val)) {
-      out += `${key}:\n`;
-      for (const item of val) {
-        out += `  - ${item}\n`;
+      if (val.length === 0) {
+        out += `${key}: []\n`;
+      } else {
+        out += `${key}:\n`;
+        for (const item of val) {
+          out += `  - ${item}\n`;
+        }
       }
     } else {
       out += `${key}: ${val}\n`;
@@ -2167,6 +2202,19 @@ function serializeFrontmatter(fm) {
   }
   out += '---\n';
   return out;
+}
+
+/**
+ * Ensures metadata from AI has all required fields with safe defaults, preserving other fields.
+ */
+function sanitizeMetadata(raw) {
+  if (!raw) return { category: '미분류', topic: [], tasks: [] };
+  return {
+    ...raw,
+    category: raw.category || '미분류',
+    topic: Array.isArray(raw.topic) ? raw.topic : [],
+    tasks: Array.isArray(raw.tasks) ? raw.tasks : []
+  };
 }
 
 function getDayName(dateStr) {
@@ -2198,10 +2246,13 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
   const fm = {
     '날짜': date,
     '시간': `"${timeDisplay}"`,
-    '유형': type,
-    status: 'captured',
-    tags: unique,
-    summary: '""',
+    'source_type': type,
+    '유형': type, // Keep for backward compatibility
+    'category': '""',
+    'status': 'captured',
+    'tags': unique,
+    'topic': [],
+    'summary': '""',
     ...extraFrontmatter
   };
   const body = `\n${linkedEntry}\n`;
@@ -2210,23 +2261,406 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
   fs.writeFileSync(filePath, content, 'utf-8');
   invalidateFileCache();
 
-  // Async: generate title and inject into frontmatter (fire-and-forget)
+  // Async: generate title and perform PIE analysis (sequentially to avoid race conditions)
   if (GEMINI_API_KEY && GEMINI_API_KEY !== 'your_key_here') {
     generateNoteTitle(linkedEntry).then(title => {
-      if (!title) return;
-      try {
-        const raw = fs.readFileSync(filePath, 'utf-8');
-        const { frontmatter: fm2 } = parseFrontmatter(raw);
-        if (!fm2.title) {
-          injectTitleToFrontmatter(filePath, raw, title);
-          titleCache[filename] = title;
-          console.log(`[Title] Generated for ${filename}: ${title}`);
+      if (title) {
+        try {
+          const raw = fs.readFileSync(filePath, 'utf-8');
+          const { frontmatter: fm2 } = parseFrontmatter(raw);
+          if (!fm2.title) {
+            injectTitleToFrontmatter(filePath, raw, title);
+            titleCache[filename] = title;
+            console.log(`[Title] Generated for ${filename}: ${title}`);
+          }
+        } catch (e) { console.warn('[Title] Inject failed:', e.message); }
+      }
+      // After title (success or fail), run PIE analysis
+      const currentRaw = fs.readFileSync(filePath, 'utf-8');
+      return applyPerspectiveFilters(filePath, currentRaw).then(() => {
+        // Phase 2.2: Action Item Extractor
+        const latestRaw = fs.readFileSync(filePath, 'utf-8');
+        return extractActionItems(filePath, latestRaw);
+      }).then((tasks) => {
+        // Phase 2.4: Calendar Draft Sync
+        if (tasks && tasks.length > 0) {
+          syncToCalendarDraft(tasks).catch(e => console.warn('[Calendar] Sync failed:', e.message));
         }
-      } catch (e) { console.warn('[Title] Inject failed:', e.message); }
-    }).catch(() => {});
+        // Phase 2.3: Consistency Auditor & RAG
+        const latestRaw = fs.readFileSync(filePath, 'utf-8');
+        return checkConsistency(filePath, latestRaw);
+      }).then(() => {
+        // Real-time RAG indexing
+        const finalRaw = fs.readFileSync(filePath, 'utf-8');
+        const { body: finalBody } = parseFrontmatter(finalRaw);
+        return updateVectorIndex(filePath, finalBody);
+      });
+    }).catch(err => {
+      console.warn('[Async Pipeline] Error:', err.message);
+      // Try remaining steps even if one fails
+      try {
+        const currentRaw = fs.readFileSync(filePath, 'utf-8');
+        applyPerspectiveFilters(filePath, currentRaw).then(() => {
+          const latestRaw = fs.readFileSync(filePath, 'utf-8');
+          extractActionItems(filePath, latestRaw).then((tasks) => {
+            if (tasks && tasks.length > 0) syncToCalendarDraft(tasks).catch(() => {});
+            const finalRaw = fs.readFileSync(filePath, 'utf-8');
+            checkConsistency(filePath, finalRaw).then(() => {
+              const { body: finalBody } = parseFrontmatter(finalRaw);
+              updateVectorIndex(filePath, finalBody).catch(() => {});
+            }).catch(() => {});
+          }).catch(() => {});
+        }).catch(() => {});
+      } catch (e) {}
+    });
   }
 
   return { created: true, filename };
+}
+
+async function syncToCalendarDraft(tasks) {
+  const token = await getAccessToken();
+  if (!token) return;
+
+  for (const task of tasks) {
+    if (!task.due) continue;
+    
+    // Check if task has time (e.g. "14:00" or "오후 2시")
+    let startTime = '';
+    let endTime = '';
+    let isAllDay = true;
+
+    // Simple heuristic: if title contains time-like string
+    const timeMatch = task.title.match(/(\d{1,2})시(\d{1,2})?분?|(\d{1,2}):(\d{2})/);
+    if (timeMatch) {
+      let h, m;
+      if (timeMatch[3]) { h = parseInt(timeMatch[3]); m = parseInt(timeMatch[4]); }
+      else { h = parseInt(timeMatch[1]); m = parseInt(timeMatch[2] || '0'); }
+      
+      // Afternoon adjustment
+      if (task.title.includes('오후') && h < 12) h += 12;
+      
+      const start = new Date(task.due + 'T' + String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':00+09:00');
+      startTime = start.toISOString();
+      const end = new Date(start.getTime() + 3600000); // +1 hour
+      endTime = end.toISOString();
+      isAllDay = false;
+    } else {
+      // For all-day events, end date must be the next day
+      const d = new Date(task.due + 'T00:00:00');
+      startTime = task.due;
+      d.setDate(d.getDate() + 1);
+      endTime = d.toISOString().slice(0, 10);
+      isAllDay = true;
+    }
+
+    try {
+      const startObj = isAllDay ? { date: startTime } : { dateTime: startTime };
+      const endObj = isAllDay ? { date: endTime } : { dateTime: endTime };
+      
+      const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          summary: `[PIE 초안] ${task.title}`,
+          description: `VaultVoice에서 자동으로 추출된 일정 초안입니다.\n원문: ${task.title}`,
+          start: startObj,
+          end: endObj,
+          status: 'tentative', // Draft state
+          colorId: '5' // Yellow/Banana color for drafts
+        })
+      });
+      if (res.ok) console.log(`[Calendar] Draft synced: ${task.title}`);
+    } catch (e) { console.warn(`[Calendar] Failed to sync task: ${task.title}`, e.message); }
+  }
+}
+
+async function updateVectorIndex(filePath, body) {
+  if (!GEMINI_API_KEY || body.length < 10) return;
+  try {
+    const embedding = await getEmbedding(body);
+    if (!embedding) return;
+
+    const relPath = path.relative(VAULT_PATH, filePath).replace(/\\/g, '/');
+    let vectors = [];
+    if (fs.existsSync(VECTOR_FILE)) {
+      try { vectors = JSON.parse(fs.readFileSync(VECTOR_FILE, 'utf-8')); } catch (e) {}
+    }
+
+    // Update or Append
+    const idx = vectors.findIndex(v => v.path === relPath);
+    const entry = {
+      path: relPath,
+      mtime: fs.statSync(filePath).mtime.getTime(),
+      vec: embedding
+    };
+
+    if (idx >= 0) vectors[idx] = entry;
+    else vectors.push(entry);
+
+    // Keep it small (last 1000 items)
+    if (vectors.length > 1000) vectors = vectors.slice(-1000);
+
+    fs.writeFileSync(VECTOR_FILE, JSON.stringify(vectors), 'utf-8');
+    console.log(`[RAG] Indexed ${path.basename(filePath)}`);
+  } catch (e) {
+    console.error('[RAG] Index update failed:', e.message);
+  }
+}
+
+const PRIVACY_KEYWORDS = (process.env.PRIVACY_KEYWORDS || '').split(',').map(k => k.trim()).filter(Boolean);
+
+function applyPrivacyShield(text) {
+  if (!text || !PRIVACY_KEYWORDS.length) return text;
+  let masked = text;
+  for (const kw of PRIVACY_KEYWORDS) {
+    const regex = new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+    masked = masked.replace(regex, '***');
+  }
+  return masked;
+}
+
+async function checkConsistency(filePath, raw) {
+  const { frontmatter, body } = parseFrontmatter(raw);
+  if (body.length < 30 || body.includes('## ⚠️ Collision Check')) return;
+
+  // 1. Find related context via RAG
+  let context = '';
+  try {
+    const queryVec = await getEmbedding(body);
+    if (queryVec && fs.existsSync(VECTOR_FILE)) {
+      const vectorData = JSON.parse(fs.readFileSync(VECTOR_FILE, 'utf-8'));
+      const related = vectorData
+        .map(item => ({ path: item.path, score: cosineSimilarity(queryVec, item.vec) }))
+        .filter(item => !filePath.includes(item.path)) // exclude current file
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3);
+      
+      for (const item of related) {
+        try {
+          const fullPath = path.join(VAULT_PATH, item.path);
+          const content = fs.readFileSync(fullPath, 'utf-8');
+          context += `\n[관련 과거 기록: ${item.path}]\n${content.slice(0, 1000)}\n`;
+        } catch (e) {}
+      }
+    }
+  } catch (e) { console.warn('[Consistency] RAG search failed:', e.message); }
+
+  if (!context) return;
+
+  // 2. Apply Privacy Shield
+  const maskedBody = applyPrivacyShield(body);
+  const maskedContext = applyPrivacyShield(context);
+
+  // 3. Detect Contradictions via Gemini
+  const prompt = `당신은 사용자의 기록 일관성과 삶의 균형을 감시하는 **'PIE Consistency Auditor v2.0'**입니다.
+당신의 페르소나는 **'재무 전문가급의 논리력과 두 아이 아빠의 세심함을 가진 비서'**입니다.
+
+새로 작성된 메모와 과거의 관련 기록들을 비교하여 다음 사항들을 분석하세요:
+
+1. **의사결정 모순**: 새로운 결정이 과거의 원칙이나 확정된 방침(예: 채용 중단, 예산 삭감 등)과 정면으로 배치되는가?
+2. **복합 일정 충돌 (Collision)**: 
+   - 단순 시간 중복뿐만 아니라, 물리적 이동 가능성이나 에너지 레벨을 고려하세요.
+   - 특히 **'생활 맥락(아파트 정전, 아이 하원, 와이프 부탁 등)'**이 업무 일정과 충돌하여 사용자가 곤란해질 상황을 먼저 찾아내세요.
+3. **재무적 리스크**: 과거에 언급된 지표(CM1 마진 등)나 계약 조건이 이번 메모의 내용으로 인해 위협받는가?
+4. **크로스 도메인 체크**: 과거에 효과적이라고 메모했던 전략(예: 게임에서의 리소스 배분 등)과 상충되는 비효율적 계획이 있는가?
+
+출력 형식:
+- 모순이나 충돌이 발견된 경우에만 '## ⚠️ Collision Check' 섹션을 생성하여 내용을 설명하세요.
+- 발견되지 않았다면 "NONE"이라고만 답하세요.
+- **재무 전문가답게 날카롭고, 아빠답게 사려 깊은 조언**을 한국어로 작성하세요.
+- 단순히 "충돌입니다"라고 하지 말고, "XX일 XX시의 YY 일정과 충돌하여 ZZ 문제가 예상됩니다"와 같이 구체적으로 지적하세요.
+
+새 메모:
+${maskedBody}
+
+과거 관련 기록:
+${maskedContext}`;
+
+  try {
+    const geminiRes = await fetch(getGeminiApiUrl('pro'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        contents: [{ parts: [{ text: prompt }] }], 
+        generationConfig: { temperature: 0.1, maxOutputTokens: 1024 } 
+      }),
+      signal: AbortSignal.timeout(20000)
+    });
+    
+    if (!geminiRes.ok) return;
+    const data = await geminiRes.json();
+    const alert = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    
+    if (alert && alert !== 'NONE' && alert.includes('Collision Check')) {
+      const currentRaw = fs.readFileSync(filePath, 'utf-8');
+      if (!currentRaw.includes('## ⚠️ Collision Check')) {
+        const updated = currentRaw.trim() + '\n\n' + alert + '\n';
+        fs.writeFileSync(filePath, updated, 'utf-8');
+        console.log(`[Consistency] Collision detected in ${path.basename(filePath)}`);
+      }
+    }
+  } catch (e) {
+    console.error('[Consistency] Audit failed:', e.message);
+  }
+}
+
+async function extractActionItems(filePath, raw) {
+  const { frontmatter, body } = parseFrontmatter(raw);
+  
+  // Skip if already has Tasks or too short
+  if (body.includes('## Tasks') || body.length < 10) return [];
+
+  // Apply Privacy Shield before sending to external API
+  const maskedBody = applyPrivacyShield(body);
+
+  const today = frontmatter['날짜'] || new Date().toISOString().slice(0, 10);
+  
+  const taskSchema = {
+    type: 'object',
+    properties: {
+      tasks: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            due: { type: 'string', description: 'YYYY-MM-DD format' },
+            priority: { type: 'string', enum: ['P1', 'P2', 'P3'] }
+          },
+          required: ['title']
+        }
+      }
+    },
+    required: ['tasks']
+  };
+
+  const prompt = `당신은 사용자의 메모에서 실행 가능한 과제(Task)를 추출하고 시간을 정규화하는 전문 어시스턴트입니다.
+기준 날짜(오늘): ${today}
+
+다음 메모에서 할 일이나 일정을 찾아 추출하세요.
+- "내일", "다음주 화요일" 등 상대적인 날짜는 기준 날짜(${today})를 바탕으로 정확한 YYYY-MM-DD 형식으로 변환하세요.
+- 구체적인 날짜가 없으면 due 필드를 생략하거나 빈 문자열로 두세요.
+
+노트 내용:
+${maskedBody.slice(0, 3000)}`;
+
+  try {
+    const geminiRes = await fetch(getGeminiApiUrl('lite'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        contents: [{ parts: [{ text: prompt }] }], 
+        generationConfig: { 
+          responseMimeType: 'application/json',
+          responseSchema: taskSchema,
+          temperature: 0.1, 
+          maxOutputTokens: 1024 
+        } 
+      }),
+      signal: AbortSignal.timeout(15000)
+    });
+    
+    if (!geminiRes.ok) return [];
+    const data = await geminiRes.json();
+    const tasks = data.tasks || [];
+    
+    if (tasks.length > 0) {
+      const currentRaw = fs.readFileSync(filePath, 'utf-8');
+      const { frontmatter: currentFm, body: currentBody } = parseFrontmatter(currentRaw);
+      
+      if (!currentBody.includes('## Tasks')) {
+        let taskListMd = '';
+        for (const t of tasks) {
+          let line = `- [ ] ${t.title}`;
+          if (t.due) line += ` [due:: ${t.due}]`;
+          if (t.priority) line += ` [priority:: ${t.priority}]`;
+          taskListMd += line + '\n';
+        }
+        const updatedBody = currentBody.trim() + '\n\n## Tasks\n\n' + taskListMd + '\n';
+        fs.writeFileSync(filePath, serializeFrontmatter(currentFm) + updatedBody, 'utf-8');
+        console.log(`[Tasks] Action items added to ${path.basename(filePath)}`);
+      }
+      return tasks;
+    }
+  } catch (e) {
+    console.error('[Tasks] Extraction failed:', e.message);
+  }
+  return [];
+}
+
+async function applyPerspectiveFilters(filePath, raw) {
+  const { frontmatter, body } = parseFrontmatter(raw);
+  
+  // Skip if already analyzed or too short
+  if (body.includes('## 🧠 PIE Perspective') || body.length < 20) return;
+
+  // Apply Privacy Shield before sending to external API
+  const maskedBody = applyPrivacyShield(body);
+
+  const prompt = `당신은 사용자의 **전략적 지배자이자 전문 FP&A(Financial Planning & Analysis) 파트너인 PIE Engine v2.0**입니다. 
+당신의 페르소나는 **'11년 차 대기업 재무팀 매니저이자, 두 아이를 키우며 삶의 균형을 치열하게 고민하는 아빠'**입니다.
+
+분석 원칙: 
+- "기록된 사실 뒤의 '왜(Why)'와 '어떻게(How)'를 집요하게 파고드세요."
+- 사용자가 스스로 생각하지 못한 **날카로운 재무적 질문**을 던지거나, **가정생활과 업무의 실질적 충돌**을 선제적으로 감지하여 제안하세요.
+- 과거의 지식(예: 게임 전략, 취미 등)을 현재의 업무나 삶에 창의적으로 대입하는 **크로스 도메인 통찰**을 제공하세요.
+
+다음 5가지 전략 필터로 분석을 수행하세요:
+1. **이해관계자 (#stakeholder)**: 발언자의 숨은 의도, KPI 충돌 지점(예: 마케팅 GMV vs 재무 마진율 CM1) 및 협상 우위 분석.
+2. **미래 시그널 (#forecast)**: 원자재가 인상, 인력 채용 등 기록이 암시하는 연쇄 반응 추론 및 리스크/기회 예고.
+3. **의사결정 내러티브 (#decision)**: 선택의 논리적 근거, 포기한 기회비용(ROI), 과거의 원칙(예: 채용 동결)과의 일치 여부.
+4. **비판적 검토 (#devils_advocates)**: 사용자의 가설을 뒤집는 반론, 치명적 약점 지적, 그리고 이를 방어할 논리 구축.
+5. **라이프-워크 링크 (#lifework)**: 아이의 유치원 식단(매운 음식 여부), 아파트 정전, 가족 행사 등 개인적 맥락이 업무 효율과 멘탈에 미치는 실질적 영향 및 조정 제안.
+
+출력 형식:
+- 반드시 '## 🧠 PIE Perspective'라는 섹션 제목 아래에 작성하세요.
+- 각 관점 중 **전략적으로 가장 가치 있는 2~3가지 항목**에 집중하여 깊이 있게 서술하세요.
+- 재무 전문가답게 'CM1 마진', 'ROI', '리소스 배분' 등의 전문 용어를 정확하게 사용하세요.
+- 각 항목 끝에 사용자가 자문해봐야 할 **'지배적 질문(Dominant Question)'**을 하나씩 포함하세요.
+- 한국어로 냉철하면서도 신뢰감 있는 전문적인 톤을 유지하세요.
+
+노트 내용:
+${maskedBody.slice(0, 6000)}`;
+
+  try {
+    const geminiRes = await fetch(getGeminiApiUrl('pro'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        contents: [{ parts: [{ text: prompt }] }], 
+        generationConfig: { temperature: 0.7, maxOutputTokens: 2048 } 
+      }),
+      signal: AbortSignal.timeout(20000)
+    });
+    
+    if (!geminiRes.ok) return;
+    const data = await geminiRes.json();
+    const perspective = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    
+    if (perspective && perspective.includes('PIE Perspective')) {
+      // Re-read file to avoid overwriting changes (like title injection)
+      const currentRaw = fs.readFileSync(filePath, 'utf-8');
+      const { frontmatter: currentFm, body: currentBody } = parseFrontmatter(currentRaw);
+
+      if (!currentBody.includes('## 🧠 PIE Perspective')) {
+        // Extract PIE hashtags from AI response and inject into frontmatter tags
+        const PIE_TAGS = ['forecast', 'stakeholder', 'decision', 'devils_advocates', 'lifework'];
+        const foundTags = PIE_TAGS.filter(tag => perspective.includes(`#${tag}`));
+        if (foundTags.length > 0) {
+          const existingTags = Array.isArray(currentFm.tags) ? currentFm.tags : (currentFm.tags ? [currentFm.tags] : []);
+          currentFm.tags = [...new Set([...existingTags, ...foundTags])];
+          console.log(`[PIE] Tags injected: ${foundTags.join(', ')}`);
+        }
+
+        const updatedBody = currentBody.trim() + '\n\n' + perspective + '\n';
+        fs.writeFileSync(filePath, serializeFrontmatter(currentFm) + updatedBody, 'utf-8');
+        console.log(`[PIE] Perspective added to ${path.basename(filePath)}`);
+      }
+    }
+  } catch (e) {
+    console.error('[PIE] Analysis failed:', e.message);
+  }
 }
 
 // ============================================================
@@ -2698,6 +3132,20 @@ app.post('/api/process/audio', auth, uploadLimiter, upload.single('file'), async
             required: ['timestamp', 'speaker', 'text']
           }
         },
+        category: { type: 'string' },
+        topic: { type: 'array', items: { type: 'string' } },
+        tasks: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string' },
+              due: { type: 'string' },
+              priority: { type: 'string' }
+            },
+            required: ['title']
+          }
+        },
         quality_check: {
           type: 'object',
           properties: {
@@ -2710,7 +3158,7 @@ app.post('/api/process/audio', auth, uploadLimiter, upload.single('file'), async
         },
         language: { type: 'string' }
       },
-      required: ['summary', 'participants', 'transcript', 'quality_check']
+      required: ['summary', 'participants', 'transcript', 'quality_check', 'category', 'topic', 'tasks']
     };
 
     const prompt = `Transcribe this audio file. Auto-detect the language (Korean, English, or mixed).
@@ -2719,12 +3167,15 @@ Return JSON with:
 1. summary: 2-3 sentence summary of the conversation (in the detected language)
 2. participants: speaker list (e.g. ["화자1", "화자2"] for Korean, ["Speaker1", "Speaker2"] for English)
 3. transcript: timestamp(MM:SS), speaker, text in order
-4. quality_check:
+4. category: One of [업무, 개인, 회의, 아이디어, 영수증, 기타]
+5. topic: List of 2-3 keywords
+6. tasks: List of action items with title, due date (YYYY-MM-DD), and priority (P1, P2, P3).
+7. quality_check:
    - broken_sentences: list of incomplete sentences (max 10)
    - unclear_ratio: ratio of unclear speech (0.0~1.0)
    - repetition_detected: whether same content repeats
    - insufficient_content: whether meaningful content is too little
-5. language: detected language code ("ko", "en", or "mixed")
+8. language: detected language code ("ko", "en", or "mixed")
 
 If multiple speakers, distinguish by voice/tone/content and label as "화자1","화자2" (Korean) or "Speaker1","Speaker2" (English).`;
 
@@ -2780,6 +3231,10 @@ If multiple speakers, distinguish by voice/tone/content and label as "화자1","
       }
     } finally {
       clearTimeout(timeout);
+    }
+
+    if (geminiResult) {
+      geminiResult = sanitizeMetadata(geminiResult);
     }
 
     // ── Step 3: Quality check → decide Whisper fallback ──────────────────
@@ -3085,6 +3540,17 @@ ${transcriptInput}`);
       body = `## 요약\n\n${finalSummary}\n\n## 전사\n\n${originalText}`;
     }
 
+    // Add extracted tasks to body
+    if (geminiResult && geminiResult.tasks && geminiResult.tasks.length > 0) {
+      body += `\n\n## Tasks\n\n`;
+      for (const task of geminiResult.tasks) {
+        let taskStr = `- [ ] ${task.title}`;
+        if (task.due) taskStr += ` [due:: ${task.due}]`;
+        if (task.priority) taskStr += ` [priority:: ${task.priority}]`;
+        body += `${taskStr}\n`;
+      }
+    }
+
     const extraFrontmatter = {
       전사방식: usedWhisper ? 'gemini+whisper' : 'gemini',
       리파인: refinedTranscript ? true : false,
@@ -3092,10 +3558,12 @@ ${transcriptInput}`);
       화자수: participants.length || 'unknown',
       녹음시간: formatDuration(audioSeconds),
       speakers: participants,
-      source: `[[assets/audio/${audioFilename}]]`
+      source: `[[assets/audio/${audioFilename}]]`,
+      category: geminiResult?.category || '""',
+      topic: geminiResult?.topic || []
     };
 
-    const noteResult = createAtomicNote(date, 'voice', body, [...suggestedTags, 'voice'], extraFrontmatter);
+    const noteResult = createAtomicNote(date, 'voice', body, [...suggestedTags, 'voice', ...(geminiResult?.topic || [])], extraFrontmatter);
     console.log('[Audio] Atomic note created:', noteResult.filename);
 
     res.json({
@@ -3142,43 +3610,77 @@ app.post('/api/process/image', auth, aiLimiter, uploadLimiter, upload.single('fi
       type: 'object',
       properties: {
         image_type: { type: 'string', enum: ['명함', '영수증', '화이트보드', '손글씨', '도표', '사진', '스크린샷'] },
+        category: { type: 'string' },
+        topic: { type: 'array', items: { type: 'string' } },
         ocr_text: { type: 'string' },
         structured_data: { type: 'object' },
         summary: { type: 'string' },
+        tasks: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string' },
+              due: { type: 'string' },
+              priority: { type: 'string' }
+            },
+            required: ['title']
+          }
+        },
         suggested_tags: { type: 'array', items: { type: 'string' } }
       },
-      required: ['image_type', 'ocr_text', 'summary', 'suggested_tags']
+      required: ['image_type', 'category', 'topic', 'ocr_text', 'summary', 'tasks', 'suggested_tags']
     };
 
     const prompt = `이 이미지를 분석해주세요.
 
 다음 정보를 JSON으로 반환하세요:
 1. image_type: 이미지 유형 (명함, 영수증, 화이트보드, 손글씨, 도표, 사진, 스크린샷 중 하나)
-2. ocr_text: 이미지에서 추출한 모든 텍스트 (없으면 빈 문자열)
+2. category: 분석된 카테고리 (업무, 개인, 회의, 아이디어, 영수증, 기타 중 하나)
+3. topic: 주제 키워드 리스트 (2-3개)
+4. ocr_text: 이미지에서 추출한 모든 텍스트 (없으면 빈 문자열)
    - 중요: 이미지에 표/테이블이 포함된 경우, 반드시 Markdown 테이블 형식(| 열1 | 열2 | ... |)으로 변환하여 ocr_text에 포함하세요.
    - 세로로 병합된 셀(rowspan)이 있으면 각 행마다 해당 값을 반복 기입하세요. 빈 셀로 두지 마세요.
    - 예: "스포츠강좌" 카테고리에 3개 항목이 있으면, 3행 모두 첫 열에 "스포츠강좌"를 넣으세요.
    - 표 앞뒤의 일반 텍스트는 그대로 유지하세요.
-3. structured_data: 유형별 구조화 데이터
+5. structured_data: 유형별 구조화 데이터
    - 명함: { name, company, phone, email, position }
    - 영수증: { date, total, items: [{name, price}], store }
    - 화이트보드/손글씨: { lines: ["정리된 텍스트 줄"] }
    - 도표/차트: { description, data_points: [{label, value}] }
    - 사진: { scene, objects: ["주요 객체"], context }
    - 스크린샷: { app_or_site, ui_elements: ["설명"], extracted_text }
-4. summary: 이미지에 대한 한줄 설명
-5. suggested_tags: 관련 태그 2~3개 (한국어)`;
+6. summary: 이미지에 대한 한줄 설명
+7. tasks: 이미지에서 추출된 할 일 목록 (title, due: YYYY-MM-DD, priority: P1|P2|P3)
+8. suggested_tags: 관련 태그 2~3개 (한국어)`;
 
     const result = await model.generateContent({
       contents: [{ role: 'user', parts: [{ text: prompt }, { inlineData: { mimeType, data: base64 } }] }],
       generationConfig: { responseMimeType: 'application/json', responseSchema: imageSchema, temperature: 0.1 }
     });
 
-    const analysis = JSON.parse(result.response.text());
-    const body = buildImageNoteBody(analysis, imageFilename);
+    let analysis = JSON.parse(result.response.text());
+    analysis = sanitizeMetadata(analysis);
+    
+    let body = buildImageNoteBody(analysis, imageFilename);
+
+    // Add extracted tasks to body
+    if (analysis.tasks && analysis.tasks.length > 0) {
+      body += `\n\n## Tasks\n\n`;
+      for (const task of analysis.tasks) {
+        let taskStr = `- [ ] ${task.title}`;
+        if (task.due) taskStr += ` [due:: ${task.due}]`;
+        if (task.priority) taskStr += ` [priority:: ${task.priority}]`;
+        body += `${taskStr}\n`;
+      }
+    }
+
     const tags = ['image', ...(analysis.suggested_tags || [])];
     const extraFrontmatter = {
       이미지유형: analysis.image_type,
+      category: analysis.category || '""',
+      topic: analysis.topic || [],
+      summary: analysis.summary ? `"${analysis.summary}"` : '""',
       source: `[[assets/images/${imageFilename}]]`,
       status: 'transcribed'
     };
@@ -3265,6 +3767,9 @@ app.post('/api/process/url', auth, aiLimiter, async (req, res) => {
       domain,
       og_title: meta.title || '',
       og_image: meta.image || '',
+      category: summary.category || '""',
+      topic: summary.topic || [],
+      summary: summary.summary ? `"${summary.summary.slice(0, 100)}..."` : '""',
       status: 'summarized'
     };
 
@@ -3327,16 +3832,33 @@ function extractOgMeta(html) {
 async function summarizeWithGemini(text, url, meta) {
   const model = getGeminiModel('pro');
 
+  // Apply Privacy Shield before sending to external API
+  const maskedText = applyPrivacyShield(text);
+
   const isYouTube = /youtu\.?be/.test(url);
   const urlSchema = {
     type: 'object',
     properties: {
       title: { type: 'string' },
       summary: { type: 'string' },
+      category: { type: 'string' },
+      topic: { type: 'array', items: { type: 'string' } },
       key_points: { type: 'array', items: { type: 'string' } },
-      keywords: { type: 'array', items: { type: 'string' } }
+      keywords: { type: 'array', items: { type: 'string' } },
+      tasks: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            due: { type: 'string' },
+            priority: { type: 'string' }
+          },
+          required: ['title']
+        }
+      }
     },
-    required: ['title', 'summary', 'key_points', 'keywords']
+    required: ['title', 'summary', 'category', 'topic', 'key_points', 'keywords', 'tasks']
   };
   const prompt = isYouTube
     ? `다음은 YouTube 영상의 자막입니다. 영상 내용을 깊이 있게 한국어로 요약해주세요.
@@ -3351,19 +3873,23 @@ async function summarizeWithGemini(text, url, meta) {
 URL: ${url}
 
 자막:
-${text}
+${maskedText}
 
 반환:
 - title: 영상 핵심을 담은 구체적인 한국어 제목
 - summary: 영상의 핵심 내용을 8~15문장으로 구체적으로 요약 (방법론/프로세스/사례 포함, 자막 복붙 금지)
+- category: 분석된 카테고리 (업무, 개인, 회의, 아이디어, 영수증, 기타 중 하나)
+- topic: 주제 키워드 리스트 (2-3개)
 - key_points: 핵심 포인트/방법론/인사이트 5~8개 (각 1~2문장, 구체적으로)
-- keywords: 핵심 키워드 3~5개 (한국어)`
-    : `다음 웹페이지 내용을 한국어로 요약해주세요. 구체적인 방법론, 수치, 사례를 빠뜨리지 마세요.\nURL: ${url}\n제목: ${meta.title || '(없음)'}\n\n내용:\n${text}\n\n반환:\n- title: 한국어 제목\n- summary: 핵심 내용 8~15문장 요약 (구체적 방법론/사례 포함)\n- key_points: 핵심 포인트 5~8개 (각 1~2문장)\n- keywords: 핵심 키워드 3~5개 (한국어)`;
+- keywords: 핵심 키워드 3~5개 (한국어)
+- tasks: 영상에서 언급된 실천 과제 또는 할 일 목록 (title, due: YYYY-MM-DD, priority: P1|P2|P3)`
+    : `다음 웹페이지 내용을 한국어로 요약해주세요. 구체적인 방법론, 수치, 사례를 빠뜨리지 마세요.\nURL: ${url}\n제목: ${meta.title || '(없음)'}\n\n내용:\n${maskedText}\n\n반환:\n- title: 한국어 제목\n- summary: 핵심 내용 8~15문장 요약 (구체적 방법론/사례 포함)\n- category: 분석된 카테고리 (업무, 개인, 회의, 아이디어, 영수증, 기타 중 하나)\n- topic: 주제 키워드 리스트 (2-3개)\n- key_points: 핵심 포인트 5~8개 (각 1~2문장)\n- keywords: 핵심 키워드 3~5개 (한국어)\n- tasks: 본문에서 언급된 할 일 또는 과제 목록 (title, due: YYYY-MM-DD, priority: P1|P2|P3)`;
   const result = await model.generateContent({
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { responseMimeType: 'application/json', responseSchema: urlSchema, temperature: 0.2, maxOutputTokens: 8192 }
   });
-  return JSON.parse(result.response.text());
+  let summaryObj = JSON.parse(result.response.text());
+  return sanitizeMetadata(summaryObj);
 }
 
 function buildUrlNoteBody(summary, meta, url) {
@@ -3373,6 +3899,19 @@ function buildUrlNoteBody(summary, meta, url) {
     for (const pt of summary.key_points) body += `- ${pt}\n`;
     body += '\n';
   }
+
+  // Add extracted tasks to body
+  if (summary.tasks && summary.tasks.length > 0) {
+    body += `## Tasks\n\n`;
+    for (const task of summary.tasks) {
+      let taskStr = `- [ ] ${task.title}`;
+      if (task.due) taskStr += ` [due:: ${task.due}]`;
+      if (task.priority) taskStr += ` [priority:: ${task.priority}]`;
+      body += `${taskStr}\n`;
+    }
+    body += '\n';
+  }
+
   if (summary.keywords && summary.keywords.length) body += `**키워드**: ${summary.keywords.join(', ')}\n\n`;
   body += `## 출처\n\n- **URL**: ${url}\n`;
   if (meta.title) body += `- **원제**: ${meta.title}\n`;
@@ -3439,7 +3978,8 @@ app.post('/api/note/summarize', auth, async (req, res) => {
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
     const { body } = parseFrontmatter(raw);
-    const prompt = `다음 노트 내용을 3~5문장으로 한국어로 핵심 요약해주세요. 마크다운 없이 일반 텍스트로 답변하세요.\n\n${body.slice(0, 8000)}`;
+    const maskedBody = applyPrivacyShield(body);
+    const prompt = `다음 노트 내용을 3~5문장으로 한국어로 핵심 요약해주세요. 마크다운 없이 일반 텍스트로 답변하세요.\n\n${maskedBody.slice(0, 8000)}`;
     const geminiRes = await fetch(getGeminiApiUrl('pro'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3498,7 +4038,9 @@ app.post('/api/note/comment', auth, async (req, res) => {
 });
 
 async function refineComment(comment) {
-  const prompt = `다음 사용자 코멘트를 맞춤법과 문장을 자연스럽게 다듬어줘. 의미는 절대 변경하지 마. 다듬은 텍스트만 출력하고 설명은 하지 마. 원문: ${comment}`;
+  // Apply Privacy Shield before sending to external API
+  const maskedComment = applyPrivacyShield(comment);
+  const prompt = `다음 사용자 코멘트를 맞춤법과 문장을 자연스럽게 다듬어줘. 의미는 절대 변경하지 마. 다듬은 텍스트만 출력하고 설명은 하지 마. 원문: ${maskedComment}`;
   const geminiRes = await fetch(getGeminiApiUrl('lite'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -3587,7 +4129,9 @@ app.post('/api/note/related', auth, async (req, res) => {
 
 async function extractKeywords(text) {
   try {
-    const prompt = `다음 텍스트에서 핵심 키워드 3~5개를 추출해줘. 쉼표로 구분된 키워드만 출력하고 설명은 하지 마.\n\n${text}`;
+    // Apply Privacy Shield before sending to external API
+    const maskedText = applyPrivacyShield(text);
+    const prompt = `다음 텍스트에서 핵심 키워드 3~5개를 추출해줘. 쉼표로 구분된 키워드만 출력하고 설명은 하지 마.\n\n${maskedText}`;
     const geminiRes = await fetch(getGeminiApiUrl('lite'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3643,7 +4187,9 @@ app.post('/api/notes/backfill-titles', auth, async (req, res) => {
 
 async function generateNoteTitle(rawOrBody) {
   const body = rawOrBody.startsWith('---') ? parseFrontmatter(rawOrBody).body : rawOrBody;
-  const prompt = `다음 노트 본문을 읽고 10~30자의 한줄 제목을 만들어줘. 제목만 출력: ${body.slice(0, 1500)}`;
+  // Apply Privacy Shield before sending to external API
+  const maskedBody = applyPrivacyShield(body);
+  const prompt = `다음 노트 본문을 읽고 10~30자의 한줄 제목을 만들어줘. 제목만 출력: ${maskedBody.slice(0, 1500)}`;
   try {
     const geminiRes = await fetch(getGeminiApiUrl('lite'), {
       method: 'POST',

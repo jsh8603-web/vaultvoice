@@ -602,19 +602,29 @@ function loadFeed() {
 function renderFeedCards(notes) {
   return notes.map(function (note) {
     var fm = note.frontmatter || {};
-    var cardType = fm['유형'] || 'memo';
+    var cardType = fm['유형'] || fm['source_type'] || 'memo';
+    var category = fm['category'] || '미분류';
+    var status = fm['status'] || '';
     var time = fm['시간'] || '';
     var tags = fm.tags || [];
+    var topic = Array.isArray(fm.topic) ? fm.topic : (fm.topic ? [fm.topic] : []);
     var body = note.body || '';
     var preview = body.length > 200 ? body.substring(0, 200) + '...' : body;
     var tagHtml = tags.filter(function (t) { return t !== 'vaultvoice'; }).map(function (t) {
       return '<span class="card-tag">#' + esc(t) + '</span>';
     }).join('');
     var filename = esc(note.filename || '');
-    return '<div class="feed-card card-' + cardType + '" data-filename="' + filename + '">' +
+
+    var statusBadge = '';
+    if (status === 'processed') statusBadge = '<span class="badge badge-status ok">분석됨</span>';
+    else if (status === 'captured') statusBadge = '<span class="badge badge-status">수집됨</span>';
+    else if (status) statusBadge = '<span class="badge badge-status">' + esc(status) + '</span>';
+
+    return '<div class="feed-card card-' + cardType + '" data-filename="' + filename + '" data-category="' + esc(category) + '" data-status="' + esc(status) + '" data-topic="' + esc(topic.join(',')) + '">' +
       '<div class="card-header">' +
       '<span class="card-icon">' + typeIcon(cardType) + '</span>' +
-      '<span style="font-size:14px;font-weight:600;color:var(--text)">' + esc(cardType) + '</span>' +
+      '<span class="badge badge-category">' + esc(category) + '</span>' +
+      statusBadge +
       (time ? '<span class="card-time">' + esc(time) + '</span>' : '') +
       '</div>' +
       '<div class="card-body">' + renderMd(preview) + '</div>' +
@@ -658,8 +668,8 @@ function loadTodosForFeed() {
       todoSection.style.display = '';
       todoList.innerHTML = d.todos.map(function (todo) {
         var pClass = '';
-        if (todo.priority === '높음') pClass = ' priority-high';
-        else if (todo.priority === '낮음') pClass = ' priority-low';
+        if (todo.priority === '높음' || todo.priority === 'P1') pClass = ' priority-high';
+        else if (todo.priority === '낮음' || todo.priority === 'P3') pClass = ' priority-low';
         var doneClass = todo.done ? ' done' : '';
         var checkClass = todo.done ? ' checked' : '';
         var meta = [];
@@ -667,10 +677,17 @@ function loadTodosForFeed() {
         if (todo.due) meta.push('~' + todo.due);
         var hasReminder = hasReminderForTodo(fmt(feedDate), todo.lineIndex);
         var bellClass = hasReminder ? ' has-reminder' : '';
+        
+        var calSyncBtn = '';
+        if (todo.due && _calConnected) {
+          calSyncBtn = '<button class="todo-cal-sync" data-line="' + todo.lineIndex + '" data-text="' + esc(todo.text) + '" data-due="' + todo.due + '" title="캘린더에 일정 추가"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></button>';
+        }
+
         return '<div class="todo-item' + pClass + doneClass + '">' +
           '<button class="todo-check' + checkClass + '" data-line="' + todo.lineIndex + '" data-date="' + fmt(feedDate) + '" data-file="' + (todo.filename || '') + '">' + (todo.done ? '✓' : '') + '</button>' +
           '<span class="todo-text">' + esc(todo.text) + '</span>' +
           (meta.length ? '<span class="todo-meta">' + esc(meta.join(' · ')) + '</span>' : '') +
+          calSyncBtn +
           '<button class="todo-bell' + bellClass + '" data-line="' + todo.lineIndex + '" data-text="' + esc(todo.text) + '" title="알림 설정"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></button>' +
           (todo.done ? '<button class="todo-delete" data-line="' + todo.lineIndex + '" data-date="' + fmt(feedDate) + '" data-file="' + (todo.filename || '') + '" title="삭제"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>' : '') +
           '</div>';
@@ -685,6 +702,26 @@ function loadTodosForFeed() {
         btn.addEventListener('click', function () {
           if (confirm('이 할일을 삭제하시겠습니까?')) {
             deleteTodo(btn.getAttribute('data-date'), parseInt(btn.getAttribute('data-line')), btn.getAttribute('data-file'));
+          }
+        });
+      });
+      todoList.querySelectorAll('.todo-cal-sync').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var title = btn.getAttribute('data-text');
+          var due = btn.getAttribute('data-due');
+          if (confirm('"' + title + '" 일정을 구글 캘린더에 추가할까요?')) {
+            api('/calendar/add', {
+              method: 'POST',
+              body: JSON.stringify({
+                summary: title,
+                start: due,
+                end: due,
+                isAllDay: true
+              })
+            }).then(function(r) {
+              if (r.ok) showToast('일정이 추가되었습니다.', 'ok');
+              else showToast('일정 추가 실패', 'error');
+            });
           }
         });
       });
@@ -862,7 +899,17 @@ function openNoteDetail(filename) {
   var cached = idx >= 0 ? notes[idx] : null;
   if (cached && cached.body) {
     var fm = cached.frontmatter || {};
-    typeEl.textContent = typeIcon(fm['유형'] || 'memo');
+    var cardType = fm['유형'] || fm['source_type'] || 'memo';
+    var category = fm['category'] || '미분류';
+    var status = fm['status'] || '';
+
+    typeEl.innerHTML = '<span class="card-icon">' + typeIcon(cardType) + '</span>' + 
+                       '<span class="badge badge-category" style="margin-left:8px">' + esc(category) + '</span>';
+    if (status) {
+        var sLabel = status === 'processed' ? '분석됨' : (status === 'captured' ? '수집됨' : status);
+        var sClass = status === 'processed' ? 'badge ok' : 'badge';
+        typeEl.innerHTML += '<span class="' + sClass + '" style="margin-left:4px">' + esc(sLabel) + '</span>';
+    }
     timeEl.textContent = fm['시간'] || '';
     bodyEl.innerHTML = renderMd(cached.body);
     var tags = (fm.tags || []).filter(function (t) { return t !== 'vaultvoice'; });
@@ -875,7 +922,17 @@ function openNoteDetail(filename) {
       .then(function (r) { return r.json(); })
       .then(function (d) {
         var fm = d.frontmatter || {};
-        typeEl.textContent = typeIcon(fm['유형'] || 'memo');
+        var cardType = fm['유형'] || fm['source_type'] || 'memo';
+        var category = fm['category'] || '미분류';
+        var status = fm['status'] || '';
+
+        typeEl.innerHTML = '<span class="card-icon">' + typeIcon(cardType) + '</span>' + 
+                           '<span class="badge badge-category" style="margin-left:8px">' + esc(category) + '</span>';
+        if (status) {
+            var sLabel = status === 'processed' ? '분석됨' : (status === 'captured' ? '수집됨' : status);
+            var sClass = status === 'processed' ? 'badge ok' : 'badge';
+            typeEl.innerHTML += '<span class="' + sClass + '" style="margin-left:4px">' + esc(sLabel) + '</span>';
+        }
         timeEl.textContent = fm['시간'] || '';
         bodyEl.innerHTML = renderMd(d.body || '');
         var tags = (fm.tags || []).filter(function (t) { return t !== 'vaultvoice'; });
