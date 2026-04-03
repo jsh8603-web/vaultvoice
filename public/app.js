@@ -341,7 +341,7 @@ function procQueueRun() {
   procQueueRender();
 
   next.sendFn().then(function (d) {
-    if (d && (d.success || d.filename || d.ok !== false)) {
+    if (d && d.ok !== false && (d.success || d.filename)) {
       next.status = 'done';
       if (navigator.vibrate) navigator.vibrate(50);
       feedDate = new Date();
@@ -427,7 +427,7 @@ function handleSave() {
         method: 'POST',
         body: JSON.stringify({ content: text, tags: tags })
       }).then(function (r) { return r.json(); }).then(function (d) {
-        if (d && (d.success || d.filename || d.ok !== false)) {
+        if (d && d.ok !== false && (d.success || d.filename)) {
           fb.textContent = '저장 완료!';
           fb.className = 'feedback ok';
           fb.style.display = '';
