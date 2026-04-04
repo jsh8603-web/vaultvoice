@@ -3331,7 +3331,7 @@ If multiple speakers, distinguish by voice/tone/content and label as "화자1","
             responseMimeType: 'application/json',
             responseSchema: transcriptionSchema,
             temperature: 0.1,
-            maxOutputTokens: 16384
+            maxOutputTokens: 32768
           }
         });
         rawText = result.response.text();
