@@ -1,0 +1,5 @@
+{
+  "Career":  { "name": "FP&A 분석",   "sections": ["💰 Budget Impact", "⚡ KPI Conflict", "🎯 Executive Intent", "✅ 재무 Action Items"] },
+  "Family":  { "name": "육아 맥락",   "sections": ["👶 발달/건강 시그널", "📅 일정 영향", "💡 부모 액션"] },
+  "Finance": { "name": "리스크 관점", "sections": ["⚠️ 위험 요인", "🛡️ 완화 방안", "📊 시나리오"] }
+}

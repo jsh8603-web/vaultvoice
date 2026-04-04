@@ -130,7 +130,7 @@ var tabTitles = {
   search: '검색',
   ai: 'AI',
   settings: '설정',
-  vault: '관리'
+  vault: '브라우저'
 };
 
 function switchTab(name, btn) {
