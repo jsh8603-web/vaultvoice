@@ -266,9 +266,9 @@ test.describe('Feed Tab', () => {
   });
 
   test('has AI action buttons', async ({ page }) => {
-    await expect(page.locator('[data-action="summarize"]')).toBeVisible();
-    await expect(page.locator('[data-action="suggest-tags"]')).toBeVisible();
-    await expect(page.locator('[data-action="categorize"]')).toBeVisible();
+    await expect(page.locator('[data-action="summarize"]').first()).toBeVisible();
+    await expect(page.locator('[data-action="tags"]').first()).toBeVisible();
+    await expect(page.locator('[data-action="comment"]').first()).toBeVisible();
   });
 
   test('date navigation works', async ({ page }) => {
