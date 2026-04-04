@@ -22,7 +22,7 @@ const MAX_RETRY = 3;
 // Disk Cache Helpers
 // ============================================================
 function getEntityMapPath() {
-  return path.join(_vaultPath, ENTITY_MAP_SUBDIR, ENTITY_MAP_FILENAME);
+  return path.join(__dirname, ENTITY_MAP_SUBDIR, ENTITY_MAP_FILENAME);
 }
 
 function loadEntityMapFromDisk() {
@@ -217,8 +217,12 @@ function applyWikiLinksToFile(noteFilePath, entities) {
     let changed = false;
     for (const name of allNames) {
       const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(`(?<!\\[\\[)${escaped}(?!\\]\\])`, 'g');
-      const newBody = body.replace(regex, `[[${name}]]`);
+      // split-token: [[...]] 구간은 건드리지 않고, 나머지 텍스트에만 치환 적용
+      const parts = body.split(/(\[\[[^\]]*?\]\])/g);
+      const newBody = parts.map((part, i) => {
+        if (i % 2 === 1) return part; // [[...]] 토큰 — 그대로 유지
+        return part.replace(new RegExp(escaped, 'g'), `[[${name}]]`);
+      }).join('');
       if (newBody !== body) { body = newBody; changed = true; }
     }
 
@@ -282,8 +286,16 @@ function initEntityIndexer(vaultPath, options = {}) {
     console.log('[EntityIndexer] Loaded from disk cache. Ready.');
   }
 
-  // Non-blocking background full scan
-  setImmediate(() => backgroundScan());
+  // Non-blocking background full scan — skip if cache is fresh (< 6h)
+  const cacheAge = _entityMap.last_updated
+    ? Date.now() - new Date(_entityMap.last_updated).getTime()
+    : Infinity;
+  if (cacheAge > 6 * 3600 * 1000) {
+    setImmediate(() => backgroundScan());
+  } else {
+    _entityMapReady = true;
+    console.log('[EntityIndexer] Cache fresh — skipping full scan.');
+  }
 }
 
 function getEntityMap() {

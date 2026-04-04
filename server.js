@@ -2390,7 +2390,7 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
         if (linkedEntry.trim().length < 100) return;
         const raw = fs.readFileSync(fp, 'utf-8');
         const { frontmatter: fm, body } = parseFrontmatter(raw);
-        if (!fm.summary) return;
+        if (!fm.summary?.trim()) return;
         if (body.includes('> [!abstract]')) return; // 재삽입 루프 방지
         const callout = `\n> [!abstract] 요약\n> ${fm.summary}\n\n`;
         fs.writeFileSync(fp, serializeFrontmatter(fm) + callout + body.trimStart(), 'utf-8');

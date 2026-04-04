@@ -2313,6 +2313,15 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // ---- Settings tab ----
   document.getElementById('logout-btn').addEventListener('click', doLogout);
+  initPushUI();
+  document.getElementById('push-subscribe-btn').addEventListener('click', function () {
+    var btn = document.getElementById('push-subscribe-btn');
+    if (btn.dataset.state === 'subscribed') {
+      teardownPushNotification();
+    } else {
+      setupPushNotification();
+    }
+  });
   document.getElementById('cal-connect-btn').addEventListener('click', function () {
     window.open('/api/auth/google', '_blank', 'width=500,height=600');
   });
@@ -2343,6 +2352,92 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('auth').style.display = '';
   }
 });
+
+// ============================================================
+// Push Notification
+// ============================================================
+function urlBase64ToUint8Array(base64String) {
+  var padding = '='.repeat((4 - base64String.length % 4) % 4);
+  var base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  var rawData = atob(base64);
+  var out = new Uint8Array(rawData.length);
+  for (var i = 0; i < rawData.length; i++) out[i] = rawData.charCodeAt(i);
+  return out;
+}
+
+function initPushUI() {
+  var btn = document.getElementById('push-subscribe-btn');
+  var statusEl = document.getElementById('push-status');
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    statusEl.textContent = '이 브라우저는 푸시 알림을 지원하지 않습니다.';
+    btn.disabled = true;
+    return;
+  }
+  navigator.serviceWorker.ready.then(function (reg) {
+    return reg.pushManager.getSubscription();
+  }).then(function (sub) {
+    if (sub) {
+      statusEl.textContent = '구독 중';
+      btn.textContent = '구독 해제';
+      btn.dataset.state = 'subscribed';
+    } else {
+      statusEl.textContent = '미구독';
+      btn.textContent = '구독';
+      btn.dataset.state = 'unsubscribed';
+    }
+  }).catch(function () {
+    statusEl.textContent = '상태 확인 실패';
+  });
+}
+
+function setupPushNotification() {
+  var btn = document.getElementById('push-subscribe-btn');
+  var statusEl = document.getElementById('push-status');
+  btn.disabled = true;
+  statusEl.textContent = '구독 중...';
+  apiFetch('/api/push/vapid-public-key').then(function (d) {
+    return navigator.serviceWorker.ready.then(function (reg) {
+      return reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(d.publicKey)
+      });
+    });
+  }).then(function (sub) {
+    return apiFetch('/api/push/subscribe', { method: 'POST', body: JSON.stringify(sub) });
+  }).then(function () {
+    statusEl.textContent = '구독 중';
+    btn.textContent = '구독 해제';
+    btn.dataset.state = 'subscribed';
+    btn.disabled = false;
+  }).catch(function (e) {
+    statusEl.textContent = '구독 실패: ' + (e.message || '알 수 없는 오류');
+    btn.disabled = false;
+  });
+}
+
+function teardownPushNotification() {
+  var btn = document.getElementById('push-subscribe-btn');
+  var statusEl = document.getElementById('push-status');
+  btn.disabled = true;
+  statusEl.textContent = '해제 중...';
+  navigator.serviceWorker.ready.then(function (reg) {
+    return reg.pushManager.getSubscription();
+  }).then(function (sub) {
+    if (!sub) return;
+    return apiFetch('/api/push/unsubscribe', {
+      method: 'DELETE',
+      body: JSON.stringify({ endpoint: sub.endpoint })
+    }).then(function () { return sub.unsubscribe(); });
+  }).then(function () {
+    statusEl.textContent = '미구독';
+    btn.textContent = '구독';
+    btn.dataset.state = 'unsubscribed';
+    btn.disabled = false;
+  }).catch(function (e) {
+    statusEl.textContent = '해제 실패: ' + (e.message || '알 수 없는 오류');
+    btn.disabled = false;
+  });
+}
 
 // ============================================================
 // Service Worker
