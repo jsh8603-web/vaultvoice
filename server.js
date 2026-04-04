@@ -1612,7 +1612,8 @@ Rules:
 // ============================================================
 // Phase 3: RAG (Knowledge Base)
 // ============================================================
-const VECTOR_FILE = path.join(VAULT_PATH, '.vectors.json');
+const VECTOR_FILE    = path.join(__dirname, '.vaultvoice', 'vectors.json');
+const DATE_INDEX_FILE = path.join(__dirname, '.vaultvoice', 'date_index.json');
 
 async function getEmbedding(text) {
   if (!text || !text.trim()) return null;
@@ -2351,6 +2352,7 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
 
   // Async AI pipeline — each stage independent, no cascade failures
   if (GEMINI_API_KEY && GEMINI_API_KEY !== 'your_key_here') {
+    let nerResultForContext = null; // Sub 2-3: closure — nerStage → contextStage 공유
     runPipeline(filePath, [
       async function generateMeta(fp) {
         const raw = fs.readFileSync(fp, 'utf-8');
@@ -2368,6 +2370,16 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
         const result = await indexNote(fp, linkedEntry);
         if (result && result.nerResult && result.nerResult.entities) {
           updateEntityFrontmatter(fp, result.nerResult.entities);
+          nerResultForContext = result.nerResult; // Sub 2-3: contextStage에서 사용
+        }
+      },
+      async function contextStage(fp) {
+        if (!nerResultForContext?.entities) return;
+        // SR R1: 80자 미만 짧은 메모 → AI 호출 방지
+        if (linkedEntry.trim().length < 80) return;
+        const facts = await extractEntityContext(linkedEntry, nerResultForContext.entities);
+        for (const { entity, fact, category } of facts) {
+          await appendEntityContext(entity, fact, category, VAULT_PATH);
         }
       },
       async function perspectiveStage(fp) {
@@ -2401,6 +2413,10 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
         await updateVectorIndex(fp, finalBody);
       }
     ]).catch(e => console.warn('[Pipeline] Unexpected error:', e.message));
+
+    // Sub 4-3: Date Conflict — setImmediate, 파이프라인 외부 비동기 실행
+    setImmediate(() => detectDateConflicts(filePath, linkedEntry)
+      .catch(e => console.warn('[DateConflict]', e.message)));
   }
 
   return { created: true, filename, filePath };
@@ -2512,6 +2528,7 @@ async function updateVectorIndex(filePath, body) {
     // Keep it small (last 1000 items)
     if (vectors.length > 1000) vectors = vectors.slice(-1000);
 
+    fs.mkdirSync(path.dirname(VECTOR_FILE), { recursive: true });
     fs.writeFileSync(VECTOR_FILE, JSON.stringify(vectors), 'utf-8');
     console.log(`[RAG] Indexed ${path.basename(filePath)}`);
   } catch (e) {
@@ -2544,6 +2561,7 @@ async function checkConsistency(filePath, raw) {
       const related = vectorData
         .map(item => ({ path: item.path, score: cosineSimilarity(queryVec, item.vec) }))
         .filter(item => !filePath.includes(item.path)) // exclude current file
+        .filter(r => r.score > 0.65) // Sub 4-4 보너스: 임계값 — Gemini 호출 50% 절감
         .sort((a, b) => b.score - a.score)
         .slice(0, 3);
       
@@ -2616,9 +2634,264 @@ ${maskedContext}`;
   }
 }
 
+// ============================================================
+// Date Conflict Detector (Sub 4-1 / Sub 4-2)
+// ============================================================
+
+let _dateIndex = null;
+let _dateIndexMtime = 0;
+const DATE_INDEX_CACHE_TTL = 6 * 3600 * 1000; // 6h — BUG-5 패턴 동일
+
+function saveDateIndex(index) {
+  fs.mkdirSync(path.dirname(DATE_INDEX_FILE), { recursive: true });
+  fs.writeFileSync(DATE_INDEX_FILE, JSON.stringify(index), 'utf-8');
+}
+
+function buildDateIndexFromVault() {
+  const index = {};
+  const DATE_RE = /(\d{4}[-\/]\d{1,2}[-\/]\d{1,2}|\d{1,2}월\s*\d{1,2}일)/g;
+  try {
+    const files = fs.readdirSync(NOTES_DIR).filter(f => f.endsWith('.md'));
+    for (const f of files) {
+      const relPath = `99_vaultvoice/${f}`;
+      try {
+        const raw = fs.readFileSync(path.join(NOTES_DIR, f), 'utf-8');
+        const matches = raw.match(DATE_RE) || [];
+        for (const d of matches) {
+          const norm = normalizeDateStr(d);
+          if (!norm) continue;
+          if (!index[norm]) index[norm] = [];
+          if (!index[norm].includes(relPath)) index[norm].push(relPath);
+        }
+      } catch (_) {}
+    }
+  } catch (e) { console.warn('[DateIndex] build failed:', e.message); }
+  return index;
+}
+
+function loadDateIndex() {
+  const now = Date.now();
+  if (_dateIndex && (now - _dateIndexMtime) < DATE_INDEX_CACHE_TTL) return _dateIndex;
+
+  try {
+    if (fs.existsSync(DATE_INDEX_FILE)) {
+      const stat = fs.statSync(DATE_INDEX_FILE);
+      const age = now - stat.mtimeMs;
+      if (age < DATE_INDEX_CACHE_TTL) {
+        _dateIndex = JSON.parse(fs.readFileSync(DATE_INDEX_FILE, 'utf-8'));
+        _dateIndexMtime = now;
+        return _dateIndex;
+      }
+    }
+  } catch (_) {}
+
+  // Cache miss / stale → rebuild
+  _dateIndex = buildDateIndexFromVault();
+  _dateIndexMtime = now;
+  saveDateIndex(_dateIndex);
+  return _dateIndex;
+}
+
+function normalizeDateStr(raw) {
+  // YYYY-MM-DD or YYYY/MM/DD → YYYY-MM-DD
+  const isoMatch = raw.match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+  if (isoMatch) {
+    const [, y, m, d] = isoMatch;
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  }
+  // M월 D일 → 올해 기준 YYYY-MM-DD
+  const koMatch = raw.match(/(\d{1,2})월\s*(\d{1,2})일/);
+  if (koMatch) {
+    const year = new Date().getFullYear();
+    const [, m, d] = koMatch;
+    return `${year}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  }
+  return null;
+}
+
+const EVENT_KEYWORDS = ['회의', '보고', '마감', '약속', '예약', '검진', '접종', '일정', '미팅', '면담'];
+
+async function detectDateConflicts(filePath, body) {
+  // Strip AI sections inline (ref: entityIndexer.stripAiSections)
+  const cleanBody = body
+    .replace(/\n##\s+🧠[\s\S]*$/, '')
+    .replace(/\n##\s+⚠️[\s\S]*$/, '')
+    .trim();
+
+  // 이벤트 키워드 체크 — false positive 방지
+  const hasEventKeyword = EVENT_KEYWORDS.some(kw => cleanBody.includes(kw));
+  if (!hasEventKeyword) return;
+
+  // 날짜 추출 + 정규화
+  const DATE_RE = /(\d{4}[-\/]\d{1,2}[-\/]\d{1,2}|\d{1,2}월\s*\d{1,2}일)/g;
+  const rawDates = cleanBody.match(DATE_RE) || [];
+  const dates = [...new Set(rawDates.map(normalizeDateStr).filter(Boolean))];
+  if (!dates.length) return;
+
+  const relPath = `99_vaultvoice/${path.basename(filePath)}`;
+  const dateIndex = loadDateIndex();
+  const conflictLines = [];
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    for (const date of dates) {
+      const conflicts = (dateIndex[date] || []).filter(f => f !== relPath);
+      for (const cf of conflicts) {
+        try {
+          const cfFp = path.join(VAULT_PATH, cf);
+          const cfRaw = fs.readFileSync(cfFp, 'utf-8');
+          const { frontmatter: cfFm } = parseFrontmatter(cfRaw);
+          const title = cfFm.title || path.basename(cf, '.md');
+          conflictLines.push(`- ${date}: ${title} (${cf})`);
+        } catch (_) {}
+      }
+      // 현재 파일을 인덱스에 추가
+      if (!dateIndex[date]) dateIndex[date] = [];
+      if (!dateIndex[date].includes(relPath)) dateIndex[date].push(relPath);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+
+  // 충돌 있으면 노트에 append
+  if (conflictLines.length > 0) {
+    try {
+      const current = fs.readFileSync(filePath, 'utf-8');
+      if (!current.includes('## ⚡ 날짜 충돌')) {
+        const section = '\n\n## ⚡ 날짜 충돌\n' + conflictLines.join('\n') + '\n';
+        fs.writeFileSync(filePath, current.trim() + section, 'utf-8');
+        console.log(`[DateConflict] ${conflictLines.length}건 감지: ${path.basename(filePath)}`);
+      }
+    } catch (e) { console.warn('[DateConflict] append failed:', e.message); }
+  }
+
+  // 인덱스 저장 (증분 업데이트)
+  saveDateIndex(dateIndex);
+}
+
+// ============================================================
+// Entity Context Extractor (Sub 2-1 / Sub 2-2)
+// ============================================================
+
+/**
+ * Extract entity-related facts from memo body using Gemini lite.
+ * @param {string} body  - original memo body (linkedEntry, pre-AI)
+ * @param {object} entities - { persons[], projects[], places[] }
+ * @returns {Promise<Array<{entity:string, fact:string, category:string}>>}
+ */
+async function extractEntityContext(body, entities) {
+  const { persons = [], projects = [], places = [] } = entities;
+  const allEntities = [
+    ...persons.map(n => ({ name: n, category: 'person' })),
+    ...projects.map(n => ({ name: n, category: 'project' })),
+    ...places.map(n => ({ name: n, category: 'place' }))
+  ];
+  if (!allEntities.length || body.trim().length < 10) return [];
+
+  const maskedBody = applyPrivacyShield(body);
+  const entityList = allEntities.map(e => `${e.name}(${e.category})`).join(', ');
+  const prompt = `이 메모에서 언급된 인물/프로젝트/장소와 관련된 구체적 사실을 추출하라.
+대상 entity 목록: ${entityList}
+메모 내용:
+${maskedBody}
+
+각 entity에 대해 메모에서 언급된 구체적 사실 1문장을 추출하라.
+entity가 메모에 없거나 사실이 없으면 해당 entity는 포함하지 마라.
+JSON 배열로만 답변하라: [{"entity":"이름","fact":"구체적 사실 1문장","category":"person|project|place"}]
+사실이 없으면 빈 배열 []로 답변하라.`;
+
+  try {
+    const res = await fetch(getGeminiApiUrl('lite'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 512 }
+      }),
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const match = text.match(/\[[\s\S]*\]/);
+    if (!match) return [];
+    const parsed = JSON.parse(match[0]);
+    return Array.isArray(parsed)
+      ? parsed.filter(e => e.entity && e.fact && e.category)
+      : [];
+  } catch (e) {
+    console.warn('[EntityContext] extractEntityContext failed:', e.message);
+    return [];
+  }
+}
+
+/**
+ * Append an entity-related fact to the entity note's "## 맥락 기록" section.
+ * Serialized per entityFp via getPipelineQueue. TTL=30d, max=20 entries.
+ */
+async function appendEntityContext(entityName, fact, category, vaultPath) {
+  const safeFilename = entityName.replace(/[\\/:*?"<>|]/g, '_') + '.md';
+  const entityFp = path.join(vaultPath, '99_vaultvoice', safeFilename);
+  if (!fs.existsSync(entityFp)) {
+    console.warn(`[EntityContext] Entity note not found: ${entityName}`);
+    return;
+  }
+
+  return getPipelineQueue(entityFp).add(async () => {
+    try {
+      const raw = fs.readFileSync(entityFp, 'utf-8');
+      const today = new Date();
+      const dateStr = today.toISOString().slice(0, 10);
+      const newEntry = `- ${dateStr} [30d] [${category}]: ${fact}`;
+      const SECTION = '## 맥락 기록';
+      const TTL_DAYS = 30;
+
+      let newContent;
+      if (raw.includes(SECTION)) {
+        const sectionStart = raw.indexOf(SECTION);
+        const beforeSection = raw.slice(0, sectionStart);
+        const afterSectionContent = raw.slice(sectionStart + SECTION.length);
+
+        // Find start of next ## section (if any)
+        const nextSecMatch = afterSectionContent.match(/\n## /);
+        const sectionBody = nextSecMatch
+          ? afterSectionContent.slice(0, nextSecMatch.index)
+          : afterSectionContent;
+        const afterSection = nextSecMatch
+          ? afterSectionContent.slice(nextSecMatch.index)
+          : '';
+
+        // Extract & TTL-filter existing entries
+        const existingEntries = sectionBody
+          .split('\n')
+          .filter(l => /^- \d{4}-\d{2}-\d{2}/.test(l))
+          .filter(line => {
+            const m = line.match(/^- (\d{4}-\d{2}-\d{2})/);
+            if (!m) return true;
+            const diffDays = (today - new Date(m[1])) / 86400000;
+            return diffDays <= TTL_DAYS;
+          });
+
+        // Prepend + cap at 20
+        const entries = [newEntry, ...existingEntries].slice(0, 20);
+        newContent = beforeSection + SECTION + '\n' + entries.join('\n') + '\n' + afterSection;
+      } else {
+        newContent = raw.trimEnd() + '\n\n' + SECTION + '\n' + newEntry + '\n';
+      }
+
+      fs.writeFileSync(entityFp, newContent, 'utf-8');
+      console.log(`[EntityContext] Appended to ${entityName}: ${fact.slice(0, 40)}`);
+    } catch (e) {
+      console.warn('[EntityContext] appendEntityContext failed:', e.message);
+    }
+  });
+}
+
 async function extractActionItems(filePath, raw) {
   const { frontmatter, body } = parseFrontmatter(raw);
-  
+
   // Skip if already has Tasks or too short
   if (body.includes('## Tasks') || body.length < 10) return [];
 
@@ -4466,12 +4739,88 @@ function gatherPendingTasks() {
   }
 }
 
-async function generateBriefingText({ events, attendees, tasks }) {
+// ============================================================
+// Entity-aware Briefing Helpers (Sub 3-1 / Sub 3-2 / SR #2)
+
+/** SR #2: Calendar attendee name에서 직급/호칭 strip */
+function normalizeAttendeeName(name) {
+  return name.replace(/\s*(?:대표|사장|전무|상무|이사|부장|차장|과장|대리|주임|팀장|님|씨)$/g, '').trim();
+}
+// ============================================================
+
+/**
+ * Levenshtein distance — no external dependency.
+ * 📐 임계값: NER dedup ≤ 2 (관대) vs Briefing match ≤ 1 (엄격, 오매칭 방지)
+ */
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => Array(n + 1).fill(0).map((_, j) => j === 0 ? i : 0));
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+  return dp[m][n];
+}
+
+/**
+ * Parse "## 맥락 기록" section from an entity note.
+ * Returns array of fact strings, filtered by TTL.
+ */
+function parseContextSection(raw, ttlDays = 30) {
+  if (!raw.includes('## 맥락 기록')) return [];
+  const sectionStart = raw.indexOf('## 맥락 기록');
+  const afterSection = raw.slice(sectionStart + '## 맥락 기록'.length);
+  const nextSecMatch = afterSection.match(/\n## /);
+  const sectionBody = nextSecMatch ? afterSection.slice(0, nextSecMatch.index) : afterSection;
+
+  const today = new Date();
+  return sectionBody
+    .split('\n')
+    .filter(l => /^- \d{4}-\d{2}-\d{2}/.test(l))
+    .filter(line => {
+      const m = line.match(/^- (\d{4}-\d{2}-\d{2})/);
+      if (!m) return true;
+      return (today - new Date(m[1])) / 86400000 <= ttlDays;
+    })
+    .map(line => {
+      const factMatch = line.match(/^- \d{4}-\d{2}-\d{2} \[30d\] \[\w+\]: (.+)/);
+      return factMatch ? factMatch[1].trim() : line.replace(/^- \d{4}-\d{2}-\d{2}[^:]*:\s*/, '').trim();
+    })
+    .filter(Boolean);
+}
+
+/**
+ * Find entity note via Levenshtein ≤ 1 match and return context facts.
+ * Stricter threshold (1) than NER dedup (2) — briefing 오매칭 방지.
+ */
+async function getEntityContextForBriefing(attendeeName, ttlDays = 30) {
+  try {
+    const cleanName = attendeeName.replace(/\[\[|\]\]/g, '').trim();
+    const files = fs.readdirSync(NOTES_DIR).filter(f => f.endsWith('.md'));
+    for (const f of files) {
+      const entityName = f.replace(/\.md$/, '');
+      if (levenshtein(cleanName, entityName) > 1) continue; // Levenshtein ≤ 1 only
+      try {
+        const raw = fs.readFileSync(path.join(NOTES_DIR, f), 'utf-8');
+        const facts = parseContextSection(raw, ttlDays);
+        if (facts.length) return facts;
+      } catch (_) {}
+    }
+  } catch (e) {
+    console.warn('[Briefing] getEntityContextForBriefing failed:', e.message);
+  }
+  return [];
+}
+
+async function generateBriefingText({ events, attendees, tasks, entityContexts = [] }) {
   try {
     const evText = events.length
       ? events.map(e => `- ${e.summary || '(무제)'} ${e.start?.dateTime ? new Date(e.start.dateTime).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : ''}`).join('\n')
       : '일정 없음';
-    const prompt = `오늘 하루 브리핑을 간결하게 한국어로 3문단 이내로 작성해라.\n\n오늘 일정:\n${evText}\n\n관련 인물: ${attendees.join(', ') || '없음'}\n\n마감 임박 할일:\n${tasks.join('\n') || '없음'}`;
+    const entitySection = entityContexts.length
+      ? '\n\n참석자 맥락 (최근 기억):\n' + entityContexts.map(ec => `- ${ec.name}: ${ec.facts.join(' / ')}`).join('\n')
+      : '';
+    const prompt = `오늘 하루 브리핑을 간결하게 한국어로 3문단 이내로 작성해라.\n\n오늘 일정:\n${evText}\n\n관련 인물: ${attendees.join(', ') || '없음'}${entitySection}\n\n마감 임박 할일:\n${tasks.join('\n') || '없음'}`;
     const res = await fetch(getGeminiApiUrl('flash'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -4532,13 +4881,16 @@ async function runDailyBriefing() {
   let calData = { events: [], attendees: [] };
   try { calData = await gatherCalendarEvents(dateKey); } catch (e) { console.warn('[Briefing] Step1:', e.message); }
 
-  // 2. Person notes (independent try/catch)
+  // 2. Fuzzy match attendees → entity context snippets (Sub 3-3)
+  // exact match 제거 → Levenshtein ≤ 1 fuzzy match + entityContextSnippets 수집
   let attendees = [];
+  let entityContextSnippets = [];
   try {
-    attendees = calData.attendees.map(name => {
-      const fp = path.join(NOTES_DIR, name.replace(/[\\/:*?"<>|]/g, '_') + '.md');
-      return fs.existsSync(fp) ? `[[${name}]]` : name;
-    });
+    for (const name of calData.attendees) {
+      attendees.push(name);
+      const facts = await getEntityContextForBriefing(normalizeAttendeeName(name));
+      if (facts.length) entityContextSnippets.push({ name, facts });
+    }
   } catch (e) { console.warn('[Briefing] Step2:', e.message); }
 
   // 3. Pending tasks (independent try/catch)
@@ -4547,7 +4899,7 @@ async function runDailyBriefing() {
 
   // 4. Gemini briefing (independent try/catch)
   let briefing = '';
-  try { briefing = await generateBriefingText({ events: calData.events, attendees, tasks }); } catch (e) { console.warn('[Briefing] Step4:', e.message); }
+  try { briefing = await generateBriefingText({ events: calData.events, attendees, tasks, entityContexts: entityContextSnippets }); } catch (e) { console.warn('[Briefing] Step4:', e.message); }
 
   // 5. Prepend to daily note (independent try/catch)
   try { await prependToBriefingNote(dateKey, briefing || '데이터를 가져오지 못했습니다.'); } catch (e) { console.warn('[Briefing] Step5:', e.message); }

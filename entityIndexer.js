@@ -203,7 +203,7 @@ function createEntityNotes(nerResult) {
       const fp = path.join(vvDir, entityNoteFilename(key));
       if (fs.existsSync(fp)) continue; // skip if exists — SR 지시
       try {
-        const fm = { type, name: key, tags, related: [], ...extra };
+        const fm = { type, name: key, aliases: [key], tags, related: [], ...extra };
         fs.writeFileSync(fp, matter.stringify(`\n# ${key}\n`, fm), 'utf-8');
         console.log(`[EntityIndexer] Created entity note: ${entityNoteFilename(key)}`);
       } catch (e) {
