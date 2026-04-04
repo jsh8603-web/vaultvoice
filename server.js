@@ -5,6 +5,7 @@ const path = require('path');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const rateLimit = require('express-rate-limit');
+const compression = require('compression');
 
 // Optional AI SDKs (graceful degradation if not installed)
 let GoogleGenerativeAI, GoogleAIFileManager, OpenAI;
@@ -182,18 +183,30 @@ const OBSIDIAN_REST_URL = process.env.OBSIDIAN_REST_URL || 'http://localhost:271
 const OBSIDIAN_REST_API_KEY = process.env.OBSIDIAN_REST_API_KEY || '';
 
 app.set('trust proxy', 1); // Trust first proxy (Cloudflare tunnel)
+app.use(compression());
 app.use(express.json());
 
-// No cache for HTML/JS/CSS (SW manages offline caching)
+// Cache policy: SW always no-cache; JS/CSS use ETag revalidation; images cache 1h
 app.use((req, res, next) => {
-  if (req.path === '/sw.js' || req.path.endsWith('.html') || req.path.endsWith('.js') || req.path.endsWith('.css') || req.path === '/') {
+  if (req.path === '/sw.js') {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.set('Pragma', 'no-cache');
+  } else if (req.path.endsWith('.js') || req.path.endsWith('.css')) {
+    res.set('Cache-Control', 'public, max-age=300, must-revalidate');
   }
   next();
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  etag: true,
+  lastModified: true,
+  maxAge: '5m',
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.html')) {
+      res.set('Cache-Control', 'no-cache, must-revalidate');
+    }
+  }
+}));
 
 // Request logger (debug)
 app.use((req, res, next) => {
@@ -2012,7 +2025,7 @@ function getAllMdFiles(dir, fileList) {
 
 // filterType: '_voice.md' | '_image.md' | '_url.md' | '_memo.md' | '_todo.md'
 // filterDate: 7 | 30 | 90 (days)
-app.get('/api/search', (req, res) => {
+app.get('/api/search', async (req, res) => {
   const q = (req.query.q || '').trim().toLowerCase();
   const scope = req.query.scope || 'daily'; // 'daily' or 'all'
   const filterType = req.query.filterType || '';
@@ -2051,26 +2064,32 @@ app.get('/api/search', (req, res) => {
   const results = [];
   const MAX_RESULTS = 50;
 
-  for (const filePath of allFiles) {
-    if (results.length >= MAX_RESULTS) break;
-    let raw;
-    try { raw = fs.readFileSync(filePath, 'utf-8'); } catch (e) { continue; }
+  // Read files in parallel batches (non-blocking event loop)
+  const BATCH_SIZE = 20;
+  for (let i = 0; i < allFiles.length && results.length < MAX_RESULTS; i += BATCH_SIZE) {
+    const batch = allFiles.slice(i, i + BATCH_SIZE);
+    const reads = await Promise.allSettled(
+      batch.map(fp => fs.promises.readFile(fp, 'utf-8').then(raw => ({ fp, raw })))
+    );
+    for (const r of reads) {
+      if (results.length >= MAX_RESULTS) break;
+      if (r.status !== 'fulfilled') continue;
+      const { fp, raw } = r.value;
+      if (raw.toLowerCase().indexOf(q) === -1) continue;
 
-    if (raw.toLowerCase().indexOf(q) === -1) continue;
-
-    const lines = raw.split('\n');
-    const matches = [];
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].toLowerCase().indexOf(q) >= 0) {
-        matches.push({ line: i, text: lines[i].trim() });
-        if (matches.length >= 3) break;
+      const lines = raw.split('\n');
+      const matches = [];
+      for (let j = 0; j < lines.length; j++) {
+        if (lines[j].toLowerCase().indexOf(q) >= 0) {
+          matches.push({ line: j, text: lines[j].trim() });
+          if (matches.length >= 3) break;
+        }
       }
-    }
-
-    if (matches.length > 0) {
-      const relPath = path.relative(VAULT_PATH, filePath).replace(/\\/g, '/');
-      const name = path.basename(filePath, '.md');
-      results.push({ date: name, path: relPath, matches });
+      if (matches.length > 0) {
+        const relPath = path.relative(VAULT_PATH, fp).replace(/\\/g, '/');
+        const name = path.basename(fp, '.md');
+        results.push({ date: name, path: relPath, matches });
+      }
     }
   }
 
@@ -3092,16 +3111,19 @@ function getVVNotesForDate(date) {
       if (f.startsWith(prefix) && f.endsWith('.md')) results.set(f, path.join(NOTES_DIR, f));
     }
   }
-  // Tier 2: other user folders
+  // Tier 2: other user folders (1-depth only — avoids full recursive vault scan)
   try {
     for (const d of fs.readdirSync(VAULT_PATH)) {
       if (VV_SEARCH_EXCLUDE.has(d) || d === VV_BASE || d.startsWith('.')) continue;
       const fullDir = path.join(VAULT_PATH, d);
       try { if (!fs.statSync(fullDir).isDirectory()) continue; } catch (e) { continue; }
-      for (const fp of getAllMdFiles(fullDir)) {
-        const base = path.basename(fp);
-        if (base.startsWith(prefix) && !results.has(base)) results.set(base, fp);
-      }
+      try {
+        for (const f of fs.readdirSync(fullDir)) {
+          if (f.startsWith(prefix) && f.endsWith('.md') && !results.has(f)) {
+            results.set(f, path.join(fullDir, f));
+          }
+        }
+      } catch (e) { /* skip */ }
     }
   } catch (e) { /* skip */ }
   // Sort by filename (= chronological) and read content
