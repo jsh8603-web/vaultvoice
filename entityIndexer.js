@@ -118,8 +118,11 @@ async function callGeminiNer(content) {
 }
 
 // ============================================================
-// Fuzzy matching helpers
+// Fuzzy matching helpers (hangul-js Jamo-aware)
 // ============================================================
+let _Hangul;
+try { _Hangul = require('hangul-js'); } catch (e) {}
+
 function levenshtein(a, b) {
   const m = a.length, n = b.length;
   const dp = Array.from({ length: m + 1 }, (_, i) => [i]);
@@ -134,10 +137,19 @@ function levenshtein(a, b) {
   return dp[m][n];
 }
 
-// Find existing key within Levenshtein distance ≤ threshold; returns key or null
+function toJamo(str) {
+  if (!_Hangul) return str;
+  try { return _Hangul.disassemble(str).join(''); } catch (e) { return str; }
+}
+
+function jamoLevenshtein(a, b) {
+  return levenshtein(toJamo(a), toJamo(b));
+}
+
+// Find existing key within Jamo Levenshtein distance ≤ threshold; returns key or null
 function findFuzzyKey(map, candidate, threshold = 2) {
   for (const existing of Object.keys(map)) {
-    if (levenshtein(candidate, existing) <= threshold) return existing;
+    if (jamoLevenshtein(candidate, existing) <= threshold) return existing;
   }
   return null;
 }
@@ -161,14 +173,26 @@ function mergeNerResult(nerResult, sourceFile) {
         : (_entityMap[type][key] ? key : null);
       if (existingKey) {
         // Merge into existing canonical key
-        if (!_entityMap[type][existingKey].sources.includes(sourceFile)) {
-          _entityMap[type][existingKey].sources.push(sourceFile);
+        const entry = _entityMap[type][existingKey];
+        if (!entry.sources.includes(sourceFile)) {
+          entry.sources.push(sourceFile);
+          // CRM fields: update lastContact + interactionCount for persons only
+          if (type === 'persons') {
+            const fileDate = (sourceFile.match(/^(\d{4}-\d{2}-\d{2})/) || [])[1] || '';
+            if (fileDate && (!entry.lastContact || fileDate > entry.lastContact)) {
+              entry.lastContact = fileDate;
+            }
+            entry.interactionCount = (entry.interactionCount || 0) + 1;
+          }
         }
         if (existingKey !== key) {
           console.log(`[EntityIndexer] Fuzzy merge: "${key}" → "${existingKey}" (distance=${levenshtein(key, existingKey)})`);
         }
       } else {
-        _entityMap[type][key] = { sources: [sourceFile], created: new Date().toISOString() };
+        const fileDate = type === 'persons' ? ((sourceFile.match(/^(\d{4}-\d{2}-\d{2})/) || [])[1] || '') : undefined;
+        const entry = { sources: [sourceFile], created: new Date().toISOString() };
+        if (type === 'persons') { entry.lastContact = fileDate; entry.interactionCount = 1; }
+        _entityMap[type][key] = entry;
         changed[type].push(key);
       }
     }
@@ -204,7 +228,11 @@ function createEntityNotes(nerResult) {
       if (fs.existsSync(fp)) continue; // skip if exists — SR 지시
       try {
         const fm = { type, name: key, aliases: [key], tags, related: [], ...extra };
-        fs.writeFileSync(fp, matter.stringify(`\n# ${key}\n`, fm), 'utf-8');
+        let body = `\n# ${key}\n`;
+        if (type === 'person') {
+          body += `\n## 상호작용 타임라인\n\n\`\`\`dataview\nTABLE 날짜, summary\nFROM #crm/interaction\nWHERE contains(attendees, "[[${key}]]")\nSORT 날짜 DESC\n\`\`\`\n`;
+        }
+        fs.writeFileSync(fp, matter.stringify(body, fm), 'utf-8');
         console.log(`[EntityIndexer] Created entity note: ${entityNoteFilename(key)}`);
       } catch (e) {
         console.warn(`[EntityIndexer] Failed to create entity note ${key}:`, e.message);
