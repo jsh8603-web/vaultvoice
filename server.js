@@ -3241,7 +3241,20 @@ app.post('/api/process/audio', auth, uploadLimiter, upload.single('file'), async
       displayName: audioFilename
     });
     const fileUri = geminiFile.file.uri;
-    console.log('[Audio] Gemini file URI:', fileUri);
+    console.log('[Audio] Gemini file URI:', fileUri, '| state:', geminiFile.file.state);
+
+    // Wait for file to become ACTIVE (large files stay PROCESSING briefly)
+    let fileState = geminiFile.file.state;
+    let waitMs = 0;
+    while (fileState !== 'ACTIVE' && waitMs < 60000) {
+      await new Promise(r => setTimeout(r, 2000));
+      waitMs += 2000;
+      const fileInfo = await fileManager.getFile(geminiFile.file.name);
+      fileState = fileInfo.state;
+      console.log(`[Audio] File state: ${fileState} (waited ${waitMs}ms)`);
+      if (fileState === 'FAILED') throw new Error('Gemini file processing failed');
+    }
+    if (fileState !== 'ACTIVE') throw new Error('Gemini file not ACTIVE after 60s');
 
     // ── Step 2: Gemini transcription with structured output ───────────────
     const model = getGeminiModel('flash');
