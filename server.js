@@ -3310,58 +3310,64 @@ Return JSON with:
 
 If multiple speakers, distinguish by voice/tone/content and label as "화자1","화자2" (Korean) or "Speaker1","Speaker2" (English).`;
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 300000); // 5 min
     let geminiResult = null;
     let geminiError = null;
-    let rawText = '';
 
-    try {
-      const result = await model.generateContent({
-        contents: [{
-          role: 'user',
-          parts: [
-            { text: prompt },
-            { fileData: { mimeType: file.mimetype || 'audio/mpeg', fileUri } }
-          ]
-        }],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          responseSchema: transcriptionSchema,
-          temperature: 0.1,
-          maxOutputTokens: 65536
-        }
-      });
-      rawText = result.response.text();
-      geminiResult = JSON.parse(rawText);
-      console.log('[Audio] Gemini transcription OK, segments:', geminiResult.transcript?.length);
-    } catch (e) {
-      // Try partial JSON recovery for truncated responses
-      if (e.message && e.message.includes('JSON') && typeof rawText === 'string') {
-        try {
-          // Attempt to close truncated JSON array/object
-          let fixed = rawText;
-          if (!fixed.endsWith('}')) {
-            const lastBrace = fixed.lastIndexOf('}');
-            if (lastBrace > 0) fixed = fixed.substring(0, lastBrace + 1);
-            // Close open arrays/objects
-            const opens = (fixed.match(/\[/g) || []).length;
-            const closes = (fixed.match(/\]/g) || []).length;
-            for (let i = 0; i < opens - closes; i++) fixed += ']';
-            if (!fixed.endsWith('}')) fixed += '}';
+    // Retry up to 3 times with exponential backoff for transient fetch errors
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      let rawText = '';
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 120000); // 2 min per attempt
+      try {
+        const result = await model.generateContent({
+          contents: [{
+            role: 'user',
+            parts: [
+              { text: prompt },
+              { fileData: { mimeType: file.mimetype || 'audio/mpeg', fileUri } }
+            ]
+          }],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            responseSchema: transcriptionSchema,
+            temperature: 0.1,
+            maxOutputTokens: 16384
           }
-          geminiResult = JSON.parse(fixed);
-          console.log('[Audio] Gemini JSON recovered after truncation, segments:', geminiResult.transcript?.length);
-        } catch (e2) {
-          console.error('[Audio] Gemini JSON recovery also failed:', e2.message);
+        });
+        rawText = result.response.text();
+        geminiResult = JSON.parse(rawText);
+        console.log(`[Audio] Gemini transcription OK (attempt ${attempt}), segments:`, geminiResult.transcript?.length);
+        clearTimeout(timeout);
+        break; // success
+      } catch (e) {
+        clearTimeout(timeout);
+        // Try partial JSON recovery for truncated responses
+        if (e.message && e.message.includes('JSON') && typeof rawText === 'string' && rawText.length > 0) {
+          try {
+            let fixed = rawText;
+            if (!fixed.endsWith('}')) {
+              const lastBrace = fixed.lastIndexOf('}');
+              if (lastBrace > 0) fixed = fixed.substring(0, lastBrace + 1);
+              const opens = (fixed.match(/\[/g) || []).length;
+              const closes = (fixed.match(/\]/g) || []).length;
+              for (let i = 0; i < opens - closes; i++) fixed += ']';
+              if (!fixed.endsWith('}')) fixed += '}';
+            }
+            geminiResult = JSON.parse(fixed);
+            console.log(`[Audio] Gemini JSON recovered after truncation (attempt ${attempt}), segments:`, geminiResult.transcript?.length);
+            break; // recovered
+          } catch (e2) {
+            console.error(`[Audio] Gemini JSON recovery also failed (attempt ${attempt}):`, e2.message);
+          }
+        }
+        geminiError = e;
+        console.error(`[Audio] Gemini transcription failed (attempt ${attempt}/3):`, e.message);
+        if (attempt < 3) {
+          const delay = attempt * 3000; // 3s, 6s
+          console.log(`[Audio] Retrying in ${delay}ms...`);
+          await new Promise(r => setTimeout(r, delay));
         }
       }
-      if (!geminiResult) {
-        geminiError = e;
-        console.error('[Audio] Gemini transcription failed:', e.message);
-      }
-    } finally {
-      clearTimeout(timeout);
     }
 
     if (geminiResult) {
