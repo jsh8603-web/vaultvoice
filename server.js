@@ -3276,20 +3276,6 @@ app.post('/api/process/audio', auth, uploadLimiter, upload.single('file'), async
             required: ['timestamp', 'speaker', 'text']
           }
         },
-        category: { type: 'string' },
-        topic: { type: 'array', items: { type: 'string' } },
-        tasks: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              title: { type: 'string' },
-              due: { type: 'string' },
-              priority: { type: 'string' }
-            },
-            required: ['title']
-          }
-        },
         quality_check: {
           type: 'object',
           properties: {
@@ -3302,7 +3288,7 @@ app.post('/api/process/audio', auth, uploadLimiter, upload.single('file'), async
         },
         language: { type: 'string' }
       },
-      required: ['summary', 'participants', 'transcript', 'quality_check', 'category', 'topic', 'tasks']
+      required: ['summary', 'participants', 'transcript', 'quality_check']
     };
 
     const prompt = `Transcribe this audio file. Auto-detect the language (Korean, English, or mixed).
@@ -3311,15 +3297,12 @@ Return JSON with:
 1. summary: 2-3 sentence summary of the conversation (in the detected language)
 2. participants: speaker list (e.g. ["화자1", "화자2"] for Korean, ["Speaker1", "Speaker2"] for English)
 3. transcript: timestamp(MM:SS), speaker, text in order
-4. category: One of [업무, 개인, 회의, 아이디어, 영수증, 기타]
-5. topic: List of 2-3 keywords
-6. tasks: List of action items with title, due date (YYYY-MM-DD), and priority (P1, P2, P3).
-7. quality_check:
+4. quality_check:
    - broken_sentences: list of incomplete sentences (max 10)
    - unclear_ratio: ratio of unclear speech (0.0~1.0)
    - repetition_detected: whether same content repeats
    - insufficient_content: whether meaningful content is too little
-8. language: detected language code ("ko", "en", or "mixed")
+5. language: detected language code ("ko", "en", or "mixed")
 
 If multiple speakers, distinguish by voice/tone/content and label as "화자1","화자2" (Korean) or "Speaker1","Speaker2" (English).`;
 
@@ -3344,7 +3327,7 @@ If multiple speakers, distinguish by voice/tone/content and label as "화자1","
             responseMimeType: 'application/json',
             responseSchema: transcriptionSchema,
             temperature: 0.1,
-            maxOutputTokens: 32768
+            maxOutputTokens: 65536
           }
         });
         rawText = result.response.text();
@@ -3748,55 +3731,38 @@ app.post('/api/process/image', auth, aiLimiter, uploadLimiter, upload.single('fi
     const base64 = imageData.toString('base64');
     const mimeType = file.mimetype || 'image/jpeg';
 
-    const model = getGeminiModel('flash');
+    const model = getGeminiModel('pro');
 
     const imageSchema = {
       type: 'object',
       properties: {
         image_type: { type: 'string', enum: ['명함', '영수증', '화이트보드', '손글씨', '도표', '사진', '스크린샷'] },
-        category: { type: 'string' },
-        topic: { type: 'array', items: { type: 'string' } },
         ocr_text: { type: 'string' },
         structured_data: { type: 'object' },
         summary: { type: 'string' },
-        tasks: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              title: { type: 'string' },
-              due: { type: 'string' },
-              priority: { type: 'string' }
-            },
-            required: ['title']
-          }
-        },
         suggested_tags: { type: 'array', items: { type: 'string' } }
       },
-      required: ['image_type', 'category', 'topic', 'ocr_text', 'summary', 'tasks', 'suggested_tags']
+      required: ['image_type', 'ocr_text', 'summary', 'suggested_tags']
     };
 
     const prompt = `이 이미지를 분석해주세요.
 
 다음 정보를 JSON으로 반환하세요:
 1. image_type: 이미지 유형 (명함, 영수증, 화이트보드, 손글씨, 도표, 사진, 스크린샷 중 하나)
-2. category: 분석된 카테고리 (업무, 개인, 회의, 아이디어, 영수증, 기타 중 하나)
-3. topic: 주제 키워드 리스트 (2-3개)
-4. ocr_text: 이미지에서 추출한 모든 텍스트 (없으면 빈 문자열)
+2. ocr_text: 이미지에서 추출한 모든 텍스트 (없으면 빈 문자열)
    - 중요: 이미지에 표/테이블이 포함된 경우, 반드시 Markdown 테이블 형식(| 열1 | 열2 | ... |)으로 변환하여 ocr_text에 포함하세요.
    - 세로로 병합된 셀(rowspan)이 있으면 각 행마다 해당 값을 반복 기입하세요. 빈 셀로 두지 마세요.
    - 예: "스포츠강좌" 카테고리에 3개 항목이 있으면, 3행 모두 첫 열에 "스포츠강좌"를 넣으세요.
    - 표 앞뒤의 일반 텍스트는 그대로 유지하세요.
-5. structured_data: 유형별 구조화 데이터
+3. structured_data: 유형별 구조화 데이터
    - 명함: { name, company, phone, email, position }
    - 영수증: { date, total, items: [{name, price}], store }
    - 화이트보드/손글씨: { lines: ["정리된 텍스트 줄"] }
    - 도표/차트: { description, data_points: [{label, value}] }
    - 사진: { scene, objects: ["주요 객체"], context }
    - 스크린샷: { app_or_site, ui_elements: ["설명"], extracted_text }
-6. summary: 이미지에 대한 한줄 설명
-7. tasks: 이미지에서 추출된 할 일 목록 (title, due: YYYY-MM-DD, priority: P1|P2|P3)
-8. suggested_tags: 관련 태그 2~3개 (한국어)`;
+4. summary: 이미지에 대한 한줄 설명
+5. suggested_tags: 관련 태그 2~3개 (한국어)`;
 
     const result = await model.generateContent({
       contents: [{ role: 'user', parts: [{ text: prompt }, { inlineData: { mimeType, data: base64 } }] }],
@@ -3809,15 +3775,9 @@ app.post('/api/process/image', auth, aiLimiter, uploadLimiter, upload.single('fi
     let body = buildImageNoteBody(analysis, imageFilename);
 
     // Add extracted tasks to body
-    if (analysis.tasks && analysis.tasks.length > 0) {
-      body += `\n\n## Tasks\n\n` + analysis.tasks.map(t => formatTaskToMarkdown(t)).join('\n') + '\n';
-    }
-
     const tags = ['image', ...(analysis.suggested_tags || [])];
     const extraFrontmatter = {
       이미지유형: analysis.image_type,
-      category: analysis.category || '""',
-      topic: analysis.topic || [],
       summary: analysis.summary ? `"${analysis.summary}"` : '""',
       source: `[[assets/images/${imageFilename}]]`,
       status: 'transcribed'
@@ -3905,8 +3865,6 @@ app.post('/api/process/url', auth, aiLimiter, async (req, res) => {
       domain,
       og_title: meta.title || '',
       og_image: meta.image || '',
-      category: summary.category || '""',
-      topic: summary.topic || [],
       summary: summary.summary ? `"${summary.summary.slice(0, 100)}..."` : '""',
       status: 'summarized'
     };
@@ -3979,24 +3937,10 @@ async function summarizeWithGemini(text, url, meta) {
     properties: {
       title: { type: 'string' },
       summary: { type: 'string' },
-      category: { type: 'string' },
-      topic: { type: 'array', items: { type: 'string' } },
       key_points: { type: 'array', items: { type: 'string' } },
-      keywords: { type: 'array', items: { type: 'string' } },
-      tasks: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            title: { type: 'string' },
-            due: { type: 'string' },
-            priority: { type: 'string' }
-          },
-          required: ['title']
-        }
-      }
+      keywords: { type: 'array', items: { type: 'string' } }
     },
-    required: ['title', 'summary', 'category', 'topic', 'key_points', 'keywords', 'tasks']
+    required: ['title', 'summary', 'key_points', 'keywords']
   };
   const prompt = isYouTube
     ? `다음은 YouTube 영상의 자막입니다. 영상 내용을 깊이 있게 한국어로 요약해주세요.
@@ -4016,12 +3960,9 @@ ${maskedText}
 반환:
 - title: 영상 핵심을 담은 구체적인 한국어 제목
 - summary: 영상의 핵심 내용을 8~15문장으로 구체적으로 요약 (방법론/프로세스/사례 포함, 자막 복붙 금지)
-- category: 분석된 카테고리 (업무, 개인, 회의, 아이디어, 영수증, 기타 중 하나)
-- topic: 주제 키워드 리스트 (2-3개)
 - key_points: 핵심 포인트/방법론/인사이트 5~8개 (각 1~2문장, 구체적으로)
-- keywords: 핵심 키워드 3~5개 (한국어)
-- tasks: 영상에서 언급된 실천 과제 또는 할 일 목록 (title, due: YYYY-MM-DD, priority: P1|P2|P3)`
-    : `다음 웹페이지 내용을 한국어로 요약해주세요. 구체적인 방법론, 수치, 사례를 빠뜨리지 마세요.\nURL: ${url}\n제목: ${meta.title || '(없음)'}\n\n내용:\n${maskedText}\n\n반환:\n- title: 한국어 제목\n- summary: 핵심 내용 8~15문장 요약 (구체적 방법론/사례 포함)\n- category: 분석된 카테고리 (업무, 개인, 회의, 아이디어, 영수증, 기타 중 하나)\n- topic: 주제 키워드 리스트 (2-3개)\n- key_points: 핵심 포인트 5~8개 (각 1~2문장)\n- keywords: 핵심 키워드 3~5개 (한국어)\n- tasks: 본문에서 언급된 할 일 또는 과제 목록 (title, due: YYYY-MM-DD, priority: P1|P2|P3)`;
+- keywords: 핵심 키워드 3~5개 (한국어)`
+    : `다음 웹페이지 내용을 한국어로 요약해주세요. 구체적인 방법론, 수치, 사례를 빠뜨리지 마세요.\nURL: ${url}\n제목: ${meta.title || '(없음)'}\n\n내용:\n${maskedText}\n\n반환:\n- title: 한국어 제목\n- summary: 핵심 내용 8~15문장 요약 (구체적 방법론/사례 포함)\n- key_points: 핵심 포인트 5~8개 (각 1~2문장)\n- keywords: 핵심 키워드 3~5개 (한국어)`;
   const result = await model.generateContent({
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { responseMimeType: 'application/json', responseSchema: urlSchema, temperature: 0.2, maxOutputTokens: 8192 }
@@ -4036,11 +3977,6 @@ function buildUrlNoteBody(summary, meta, url) {
     body += `## 핵심 포인트\n\n`;
     for (const pt of summary.key_points) body += `- ${pt}\n`;
     body += '\n';
-  }
-
-  // Add extracted tasks to body
-  if (summary.tasks && summary.tasks.length > 0) {
-    body += `## Tasks\n\n` + summary.tasks.map(t => formatTaskToMarkdown(t)).join('\n') + '\n\n';
   }
 
   if (summary.keywords && summary.keywords.length) body += `**키워드**: ${summary.keywords.join(', ')}\n\n`;

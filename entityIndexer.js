@@ -118,6 +118,31 @@ async function callGeminiNer(content) {
 }
 
 // ============================================================
+// Fuzzy matching helpers
+// ============================================================
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+// Find existing key within Levenshtein distance ≤ threshold; returns key or null
+function findFuzzyKey(map, candidate, threshold = 2) {
+  for (const existing of Object.keys(map)) {
+    if (levenshtein(candidate, existing) <= threshold) return existing;
+  }
+  return null;
+}
+
+// ============================================================
 // Entity Map Merge
 // ============================================================
 function mergeNerResult(nerResult, sourceFile) {
@@ -129,11 +154,22 @@ function mergeNerResult(nerResult, sourceFile) {
       const key = (name || '').trim();
       if (!key) continue;
       if (!_entityMap[type]) _entityMap[type] = {};
-      if (!_entityMap[type][key]) {
+      // Fuzzy dedup: only apply to persons (typos/nicknames common there)
+      const fuzzyThreshold = type === 'persons' ? 2 : 0;
+      const existingKey = fuzzyThreshold > 0
+        ? findFuzzyKey(_entityMap[type], key, fuzzyThreshold)
+        : (_entityMap[type][key] ? key : null);
+      if (existingKey) {
+        // Merge into existing canonical key
+        if (!_entityMap[type][existingKey].sources.includes(sourceFile)) {
+          _entityMap[type][existingKey].sources.push(sourceFile);
+        }
+        if (existingKey !== key) {
+          console.log(`[EntityIndexer] Fuzzy merge: "${key}" → "${existingKey}" (distance=${levenshtein(key, existingKey)})`);
+        }
+      } else {
         _entityMap[type][key] = { sources: [sourceFile], created: new Date().toISOString() };
         changed[type].push(key);
-      } else if (!_entityMap[type][key].sources.includes(sourceFile)) {
-        _entityMap[type][key].sources.push(sourceFile);
       }
     }
   }
