@@ -4635,6 +4635,217 @@ async function runDailyBriefing() {
 }
 
 // ============================================================
+// Pi UI: Note Tags — get current + AI suggestions
+// ============================================================
+function findNoteFile(filename) {
+  const flat = path.join(NOTES_DIR, filename);
+  if (fs.existsSync(flat)) return flat;
+  try {
+    const subdirs = fs.readdirSync(NOTES_DIR).filter(d => {
+      try { return fs.statSync(path.join(NOTES_DIR, d)).isDirectory(); } catch (e) { return false; }
+    });
+    for (const sub of subdirs) {
+      const full = path.join(NOTES_DIR, sub, filename);
+      if (fs.existsSync(full)) return full;
+    }
+  } catch (e) {}
+  return null;
+}
+
+app.post('/api/note/tags', auth, async (req, res) => {
+  const { filename } = req.body;
+  if (!filename) return res.status(400).json({ error: 'filename required' });
+  const filePath = findNoteFile(filename);
+  if (!filePath) return res.status(404).json({ error: 'Note not found' });
+
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  const { frontmatter, body } = parseFrontmatter(raw);
+  const currentTags = Array.isArray(frontmatter.tags) ? frontmatter.tags.filter(t => t !== 'vaultvoice') : [];
+
+  let suggestions = [];
+  if (GEMINI_API_KEY && GEMINI_API_KEY !== 'your_key_here') {
+    try {
+      const contentForTags = body.replace(/```[\s\S]*?```/g, '').trim().slice(0, 1000);
+      const existingStr = currentTags.length ? ` 제외:${currentTags.join(',')}` : '';
+      const tagPrompt = `한줄 JSON 배열로 태그 10개.${existingStr} 한국어(약어영어OK). 구체명사우선. 범용금지.\n["태그1","태그2",...] 형식만.\n${contentForTags}`;
+      const geminiRes = await fetch(getGeminiApiUrl('flash'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: tagPrompt }] }], generationConfig: { temperature: 0.7, maxOutputTokens: 512 } }),
+        signal: AbortSignal.timeout(10000)
+      });
+      if (geminiRes.ok) {
+        const data = await geminiRes.json();
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const cleaned = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+        let jsonMatch = cleaned.match(/\[[\s\S]*?\]/);
+        if (!jsonMatch && cleaned.includes('[')) {
+          let partial = cleaned.slice(cleaned.indexOf('['));
+          partial = partial.replace(/,\s*"[^"]*$/, '').replace(/,\s*$/, '');
+          if (!partial.endsWith(']')) partial += ']';
+          try { JSON.parse(partial); jsonMatch = [partial]; } catch (_) {}
+        }
+        if (jsonMatch) {
+          const rawSugs = JSON.parse(jsonMatch[0]).map(t => String(t).trim()).filter(Boolean);
+          const norm = s => s.replace(/\s+/g, '').toLowerCase();
+          const currentNorms = new Set(currentTags.map(norm));
+          suggestions = rawSugs.filter(t => !currentNorms.has(norm(t)));
+        }
+      }
+    } catch (e) {
+      console.error('[Tags] AI suggestion error:', e.message);
+    }
+  }
+  res.json({ currentTags, suggestions });
+});
+
+// ============================================================
+// Pi UI: Note Tags Save
+// ============================================================
+app.post('/api/note/tags/save', auth, (req, res) => {
+  const { filename, tags } = req.body;
+  if (!filename || !Array.isArray(tags)) return res.status(400).json({ error: 'filename and tags array required' });
+  const filePath = findNoteFile(filename);
+  if (!filePath) return res.status(404).json({ error: 'Note not found' });
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const { frontmatter, body } = parseFrontmatter(raw);
+    const allTags = tags.includes('vaultvoice') ? tags : ['vaultvoice', ...tags];
+    const systemTags = new Set(['vaultvoice', 'voice', 'image', 'memo', 'url', 'file', 'text']);
+    frontmatter.tags = allTags;
+    frontmatter.user_tags = allTags.filter(t => !systemTags.has(t));
+    fs.writeFileSync(filePath, serializeFrontmatter(frontmatter) + body, 'utf-8');
+    invalidateFileCache();
+    res.json({ success: true, tags: allTags });
+  } catch (e) {
+    console.error('[Tags Save] Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
+// Pi UI: Vault Stats
+// ============================================================
+app.get('/api/vault/stats', auth, (req, res) => {
+  const allFiles = getAllMdFilesCached();
+  const stats = { total: allFiles.length, types: {}, tags: {} };
+  for (const fp of allFiles) {
+    const base = path.basename(fp);
+    const typeMatch = base.match(/_([a-z]+)\.md$/);
+    const type = typeMatch ? typeMatch[1] : 'other';
+    stats.types[type] = (stats.types[type] || 0) + 1;
+    try {
+      const raw = fs.readFileSync(fp, 'utf-8');
+      const { frontmatter } = parseFrontmatter(raw);
+      if (Array.isArray(frontmatter.tags)) {
+        for (const t of frontmatter.tags) {
+          if (t !== 'vaultvoice') stats.tags[t] = (stats.tags[t] || 0) + 1;
+        }
+      }
+    } catch (e) {}
+  }
+  res.json(stats);
+});
+
+// ============================================================
+// Pi UI: Vault Browse
+// ============================================================
+app.get('/api/vault/browse', auth, (req, res) => {
+  const offset = parseInt(req.query.offset) || 0;
+  const limit = Math.min(parseInt(req.query.limit) || 30, 100);
+  const filterType = req.query.type || '';
+  const filterTag = req.query.tag || '';
+
+  let allFiles = getAllMdFilesCached().slice().sort((a, b) => {
+    const da = (path.basename(a).match(/^(\d{4}-\d{2}-\d{2})/) || ['', ''])[1];
+    const db = (path.basename(b).match(/^(\d{4}-\d{2}-\d{2})/) || ['', ''])[1];
+    if (da && db) return db.localeCompare(da);
+    if (da) return -1;
+    if (db) return 1;
+    return path.basename(b).localeCompare(path.basename(a));
+  });
+
+  if (filterType) {
+    allFiles = allFiles.filter(f => path.basename(f).endsWith(`_${filterType}.md`));
+  }
+
+  const results = [];
+  let scanned = 0;
+  for (const fp of allFiles) {
+    if (filterTag) {
+      try {
+        const raw = fs.readFileSync(fp, 'utf-8');
+        const { frontmatter } = parseFrontmatter(raw);
+        if (!Array.isArray(frontmatter.tags) || !frontmatter.tags.includes(filterTag)) continue;
+      } catch (e) { continue; }
+    }
+    scanned++;
+    if (scanned <= offset) continue;
+    if (results.length >= limit) break;
+
+    const base = path.basename(fp);
+    const typeMatch = base.match(/_([a-z]+)\.md$/);
+    const type = typeMatch ? typeMatch[1] : 'other';
+    const dateMatch = base.match(/^(\d{4}-\d{2}-\d{2})/);
+    let date = dateMatch ? dateMatch[1] : '';
+    if (!date) { try { date = fs.statSync(fp).mtime.toISOString().slice(0, 10); } catch (e) {} }
+    let title = base;
+    try {
+      const raw = fs.readFileSync(fp, 'utf-8');
+      const { frontmatter, body } = parseFrontmatter(raw);
+      if (frontmatter.title) title = frontmatter.title;
+      else if (Array.isArray(frontmatter.aliases) && frontmatter.aliases[0]) title = frontmatter.aliases[0];
+      const preview = body.replace(/^#+\s.*/gm, '').replace(/\n/g, ' ').trim().slice(0, 300);
+      results.push({ filename: base, type, date, title, preview, frontmatter: { tags: frontmatter.tags, '유형': type, '시간': frontmatter['시간'] || '' } });
+    } catch (e) {
+      results.push({ filename: base, type, date, title, preview: '', frontmatter: {} });
+    }
+  }
+  res.json({ results, total: scanned, offset, hasMore: results.length >= limit });
+});
+
+// ============================================================
+// Pi UI: Vault Retag (batch AI re-tag for recent notes)
+// ============================================================
+app.post('/api/vault/retag', auth, aiLimiter, async (req, res) => {
+  const days = Math.min(parseInt(req.body?.days) || 7, 30);
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  const allFiles = getAllMdFilesCached().filter(fp => {
+    try { return fs.statSync(fp).mtime.getTime() > cutoff; } catch (e) { return false; }
+  });
+  const results = [];
+  for (const fp of allFiles.slice(0, 50)) {
+    try {
+      const raw = fs.readFileSync(fp, 'utf-8');
+      const { frontmatter, body } = parseFrontmatter(raw);
+      const contentForTags = body.replace(/```[\s\S]*?```/g, '').trim().slice(0, 800);
+      const tagPrompt = `한줄 JSON 배열로 태그 5개. 한국어(약어영어OK). 구체명사우선. 범용금지.\n["태그1","태그2",...] 형식만.\n${contentForTags}`;
+      const geminiRes = await fetch(getGeminiApiUrl('flash'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: tagPrompt }] }], generationConfig: { temperature: 0.5, maxOutputTokens: 256 } }),
+        signal: AbortSignal.timeout(8000)
+      });
+      if (!geminiRes.ok) { results.push({ filename: path.basename(fp), status: 'skipped' }); continue; }
+      const data = await geminiRes.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const jsonMatch = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim().match(/\[[\s\S]*?\]/);
+      if (!jsonMatch) { results.push({ filename: path.basename(fp), status: 'skipped' }); continue; }
+      const newTags = JSON.parse(jsonMatch[0]).map(t => String(t).trim()).filter(Boolean);
+      const existingTags = Array.isArray(frontmatter.tags) ? frontmatter.tags : [];
+      const merged = [...new Set(['vaultvoice', ...existingTags.filter(t => ['vaultvoice','memo','voice','image','url','file'].includes(t)), ...newTags])];
+      frontmatter.tags = merged;
+      fs.writeFileSync(fp, serializeFrontmatter(frontmatter) + body, 'utf-8');
+      results.push({ filename: path.basename(fp), status: 'ok', tags: merged });
+    } catch (e) {
+      results.push({ filename: path.basename(fp), status: 'skipped', error: e.message });
+    }
+  }
+  invalidateFileCache();
+  res.json({ results });
+});
+
+// ============================================================
 // SPA fallback
 // ============================================================
 app.get('*', (req, res) => {

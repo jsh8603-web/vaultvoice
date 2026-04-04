@@ -40,6 +40,13 @@ function esc(s) {
   return d.innerHTML;
 }
 
+function linkifyUrls(html) {
+  return html.replace(/(https?:\/\/[^\s<"'&]+(?:&amp;[^\s<"'&]+)*)/g, function (url) {
+    var href = url.replace(/&amp;/g, '&');
+    return '<a href="' + href + '" target="_blank" rel="noopener" style="color:var(--accent);word-break:break-all">' + url + '</a>';
+  });
+}
+
 function showToast(message, type) {
   type = type || 'info';
   var el = document.createElement('div');
@@ -49,7 +56,7 @@ function showToast(message, type) {
   setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 3200);
 }
 
-function fmt(d) { return d.toISOString().slice(0, 10); }
+function fmt(d) { var y = d.getFullYear(), m = d.getMonth() + 1, day = d.getDate(); return y + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day); }
 
 function fmtDisplay(d) {
   var days = ['일', '월', '화', '수', '목', '금', '토'];
@@ -113,12 +120,38 @@ function doLogout() {
 function showApp() {
   document.getElementById('auth').style.display = 'none';
   document.getElementById('app').style.display = '';
-  updateFeedDate();
-  loadTags();
-  initReminders();
-  initJarvis();
-  checkCalendarStatus();
-  loadQuickTodos();
+  // Verify server connection before loading data
+  fetch('/api/health').then(function (r) {
+    if (!r.ok) throw new Error('health check failed');
+    updateFeedDate();
+    loadTags();
+    initReminders();
+    initJarvis();
+    checkCalendarStatus();
+    loadQuickTodos();
+  }).catch(function () {
+    // Server unreachable — show app shell with retry
+    updateFeedDate();
+    initJarvis();
+    showToast('서버 연결 실패 — 재시도 중...', 'warning');
+    var retryCount = 0;
+    var retryInterval = setInterval(function () {
+      retryCount++;
+      fetch('/api/health').then(function (r) {
+        if (r.ok) {
+          clearInterval(retryInterval);
+          loadTags();
+          initReminders();
+          checkCalendarStatus();
+          loadQuickTodos();
+          loadFeed();
+          showToast('서버 연결됨', 'success');
+        }
+      }).catch(function () {
+        if (retryCount >= 30) { clearInterval(retryInterval); showToast('서버에 연결할 수 없습니다', 'error'); }
+      });
+    }, 3000);
+  });
 }
 
 // ============================================================
@@ -130,7 +163,7 @@ var tabTitles = {
   search: '검색',
   ai: 'AI',
   settings: '설정',
-  vault: '관리'
+  vault: '브라우저'
 };
 
 function switchTab(name, btn) {
@@ -145,6 +178,7 @@ function switchTab(name, btn) {
   if (name === 'search') { loadHistoryFallback(); }
   if (name === 'ai') { if (jarvisInput) jarvisInput.focus(); showOnboarding(); }
   if (name === 'settings') loadSettings();
+  if (name === 'vault') loadVaultBrowser();
 }
 
 // ============================================================
@@ -341,7 +375,7 @@ function procQueueRun() {
   procQueueRender();
 
   next.sendFn().then(function (d) {
-    if (d && d.ok !== false && (d.success || d.filename)) {
+    if (d && (d.success || d.filename || d.ok !== false)) {
       next.status = 'done';
       if (navigator.vibrate) navigator.vibrate(50);
       feedDate = new Date();
@@ -427,7 +461,7 @@ function handleSave() {
         method: 'POST',
         body: JSON.stringify({ content: text, tags: tags })
       }).then(function (r) { return r.json(); }).then(function (d) {
-        if (d && d.ok !== false && (d.success || d.filename)) {
+        if (d && (d.success || d.filename || d.ok !== false)) {
           fb.textContent = '저장 완료!';
           fb.className = 'feedback ok';
           fb.style.display = '';
@@ -554,6 +588,17 @@ function loadFeed() {
       el.querySelectorAll('.feed-card').forEach(function (card) {
         card.style.cursor = 'pointer';
         card.addEventListener('click', function (e) {
+          if (e.target.closest('a')) return;
+          // Check if tag editor is interacted with
+          if (e.target.closest('.card-tag-editor')) return;
+          // Check if tag area was clicked
+          if (e.target.closest('.card-tags')) {
+            e.stopPropagation();
+            var editor = card.querySelector('.card-tag-editor');
+            var tagFile = editor && editor.getAttribute('data-file');
+            if (tagFile) handleCardTags(tagFile, card);
+            return;
+          }
           // Check if action button was clicked
           var actionBtn = e.target.closest('.card-action-btn');
           var commentSubmit = e.target.closest('[data-action="comment-submit"]');
@@ -568,6 +613,8 @@ function loadFeed() {
               if (relatedEl && !relatedEl.innerHTML) loadRelatedNotes(file, relatedEl);
             } else if (action === 'comment') {
               handleCardComment(file, card);
+            } else if (action === 'tags') {
+              handleCardTags(file, card);
             } else if (action === 'jarvis') {
               handleCardJarvis(file);
             } else if (action === 'delete') {
@@ -585,12 +632,12 @@ function loadFeed() {
           if (relatedLink) {
             e.stopPropagation();
             var relFile = relatedLink.getAttribute('data-file');
-            if (relFile) openNoteDetail(relFile);
+            if (relFile) openNoteDetail(relFile, window._feedNotes);
             return;
           }
           // Default: open note detail
           var fn = card.getAttribute('data-filename');
-          if (fn) openNoteDetail(fn);
+          if (fn) openNoteDetail(fn, window._feedNotes);
         });
       });
     })
@@ -602,52 +649,88 @@ function loadFeed() {
 function renderFeedCards(notes) {
   return notes.map(function (note) {
     var fm = note.frontmatter || {};
-    var cardType = fm['유형'] || fm['source_type'] || 'memo';
-    var category = fm['category'] || '미분류';
-    var status = fm['status'] || '';
+    var cardType = fm['유형'] || 'memo';
     var time = fm['시간'] || '';
     var tags = fm.tags || [];
-    var topic = Array.isArray(fm.topic) ? fm.topic : (fm.topic ? [fm.topic] : []);
-    var body = note.body || '';
-    var preview = body.length > 200 ? body.substring(0, 200) + '...' : body;
+    var body = (note.body || '').replace(/^#{1,3}\s+.+\n*/gm, '').trim();
+    var preview = body.length > 300 ? body.substring(0, 300) + '...' : body;
     var tagHtml = tags.filter(function (t) { return t !== 'vaultvoice'; }).map(function (t) {
       return '<span class="card-tag">#' + esc(t) + '</span>';
     }).join('');
     var filename = esc(note.filename || '');
-
-    var statusBadge = '';
-    if (status === 'processed') statusBadge = '<span class="badge badge-status ok">분석됨</span>';
-    else if (status === 'captured') statusBadge = '<span class="badge badge-status">수집됨</span>';
-    else if (status) statusBadge = '<span class="badge badge-status">' + esc(status) + '</span>';
-
-    return '<div class="feed-card card-' + cardType + '" data-filename="' + filename + '" data-category="' + esc(category) + '" data-status="' + esc(status) + '" data-topic="' + esc(topic.join(',')) + '">' +
+    var title = fm.title || fm['제목'] || (fm.aliases && fm.aliases[0]) || '';
+    if (!title) { title = (note.filename || '').replace(/\.md$/, ''); }
+    var fdMatch = (note.filename || '').match(/^(\d{4}-\d{2}-\d{2})/);
+    var feedDate2 = fdMatch ? fdMatch[1] : '';
+    return '<div class="feed-card card-' + cardType + '" data-filename="' + filename + '">' +
       '<div class="card-header">' +
       '<span class="card-icon">' + typeIcon(cardType) + '</span>' +
-      '<span class="badge badge-category">' + esc(category) + '</span>' +
-      statusBadge +
-      (time ? '<span class="card-time">' + esc(time) + '</span>' : '') +
+      '<span class="card-type-label">' + typeLabel(cardType) + '</span>' +
+      '<span class="card-time">' + esc(feedDate2 || time) + '</span>' +
       '</div>' +
+      '<div class="card-title">\u300C' + esc(title) + '\u300D</div>' +
       '<div class="card-body">' + renderMd(preview) + '</div>' +
       (tagHtml ? '<div class="card-tags">' + tagHtml + '</div>' : '') +
-      '<div class="card-actions">' +
-      '<button class="card-action-btn" data-action="summarize" data-file="' + filename + '" title="AI 요약">✦</button>' +
-      '<button class="card-action-btn" data-action="comment" data-file="' + filename + '" title="코멘트">💬</button>' +
-      '<button class="card-action-btn" data-action="jarvis" data-file="' + filename + '" title="Jarvis로 열기">🤖</button>' +
-      '<button class="card-action-btn card-action-delete" data-action="delete" data-file="' + filename + '" title="삭제">🗑</button>' +
-      '</div>' +
-      '<div class="card-summary" style="display:none"></div>' +
-      '<div class="card-comment-input" style="display:none">' +
-      '<textarea placeholder="이 노트에 대한 소감..." rows="2"></textarea>' +
-      '<button class="btn-sm" data-action="comment-submit" data-file="' + filename + '">코멘트 추가</button>' +
-      '</div>' +
+      renderCardActions(filename) +
       '<div class="card-related"></div>' +
       '</div>';
   }).join('');
 }
 
-function typeIcon(type) {
-  var icons = { voice: 'Voice', image: 'Image', url: 'URL', memo: 'Memo', todo: 'Todo' };
-  return icons[type] || 'Note';
+var _typeSvgPaths = {
+  voice: '<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>',
+  url: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  memo: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
+  todo: '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'
+};
+var _defaultSvgPath = '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>';
+
+function typeIcon(type, size) {
+  var s = size || 16;
+  var paths = _typeSvgPaths[type] || _defaultSvgPath;
+  return '<svg viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + paths + '</svg>';
+}
+
+function typeLabel(type) {
+  var labels = { voice: '음성', image: '이미지', url: 'URL', memo: '메모', todo: '할일', other: '기타' };
+  return labels[type] || type;
+}
+
+function renderTagsHtml(tags) {
+  if (!tags || !tags.length) return '';
+  return '<div class="card-tags">' + tags.map(function (t) {
+    return '<span class="card-tag">#' + esc(t) + '</span>';
+  }).join('') + '</div>';
+}
+
+function renderCardActions(filename) {
+  var svgAttr = 'viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"';
+  var svgSummarize = '<svg ' + svgAttr + '><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>';
+  var svgComment = '<svg ' + svgAttr + '><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+  var svgJarvis = '<svg ' + svgAttr + '><path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1.17A7 7 0 0 1 14 23h-4a7 7 0 0 1-6.83-4H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2z"/><circle cx="9" cy="14" r="1.5"/><circle cx="15" cy="14" r="1.5"/></svg>';
+  var svgDelete = '<svg ' + svgAttr + '><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>';
+  var svgTag = '<svg ' + svgAttr + '><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>';
+  return '<div class="card-actions">' +
+    '<button class="card-action-btn" data-action="summarize" data-file="' + filename + '">' + svgSummarize + '</button>' +
+    '<button class="card-action-btn" data-action="comment" data-file="' + filename + '">' + svgComment + '</button>' +
+    '<button class="card-action-btn" data-action="tags" data-file="' + filename + '">' + svgTag + '</button>' +
+    '<button class="card-action-btn" data-action="jarvis" data-file="' + filename + '">' + svgJarvis + '</button>' +
+    '<button class="card-action-btn card-action-delete" data-action="delete" data-file="' + filename + '">' + svgDelete + '</button>' +
+    '</div>' +
+    '<div class="card-summary" style="display:none"></div>' +
+    '<div class="card-comment-input" style="display:none">' +
+    '<textarea placeholder="이 노트에 대한 소감..." rows="2"></textarea>' +
+    '<button class="btn-sm" data-action="comment-submit" data-file="' + filename + '">코멘트 추가</button>' +
+    '</div>' +
+    '<div class="card-tag-editor" style="display:none" data-file="' + filename + '">' +
+    '<div class="tag-editor-current"></div>' +
+    '<div class="tag-editor-suggestions"></div>' +
+    '<div class="tag-editor-input-row">' +
+    '<input type="text" class="tag-manual-input" placeholder="태그 입력 후 Enter">' +
+    '<button class="btn-sm" data-action="tag-save" data-file="' + filename + '">저장</button>' +
+    '</div>' +
+    '</div>';
 }
 
 function loadTodosForFeed() {
@@ -668,8 +751,8 @@ function loadTodosForFeed() {
       todoSection.style.display = '';
       todoList.innerHTML = d.todos.map(function (todo) {
         var pClass = '';
-        if (todo.priority === '높음' || todo.priority === 'P1') pClass = ' priority-high';
-        else if (todo.priority === '낮음' || todo.priority === 'P3') pClass = ' priority-low';
+        if (todo.priority === '높음') pClass = ' priority-high';
+        else if (todo.priority === '낮음') pClass = ' priority-low';
         var doneClass = todo.done ? ' done' : '';
         var checkClass = todo.done ? ' checked' : '';
         var meta = [];
@@ -677,17 +760,10 @@ function loadTodosForFeed() {
         if (todo.due) meta.push('~' + todo.due);
         var hasReminder = hasReminderForTodo(fmt(feedDate), todo.lineIndex);
         var bellClass = hasReminder ? ' has-reminder' : '';
-        
-        var calSyncBtn = '';
-        if (todo.due && _calConnected) {
-          calSyncBtn = '<button class="todo-cal-sync" data-line="' + todo.lineIndex + '" data-text="' + esc(todo.text) + '" data-due="' + todo.due + '" title="캘린더에 일정 추가"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></button>';
-        }
-
         return '<div class="todo-item' + pClass + doneClass + '">' +
           '<button class="todo-check' + checkClass + '" data-line="' + todo.lineIndex + '" data-date="' + fmt(feedDate) + '" data-file="' + (todo.filename || '') + '">' + (todo.done ? '✓' : '') + '</button>' +
           '<span class="todo-text">' + esc(todo.text) + '</span>' +
           (meta.length ? '<span class="todo-meta">' + esc(meta.join(' · ')) + '</span>' : '') +
-          calSyncBtn +
           '<button class="todo-bell' + bellClass + '" data-line="' + todo.lineIndex + '" data-text="' + esc(todo.text) + '" title="알림 설정"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></button>' +
           (todo.done ? '<button class="todo-delete" data-line="' + todo.lineIndex + '" data-date="' + fmt(feedDate) + '" data-file="' + (todo.filename || '') + '" title="삭제"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>' : '') +
           '</div>';
@@ -702,26 +778,6 @@ function loadTodosForFeed() {
         btn.addEventListener('click', function () {
           if (confirm('이 할일을 삭제하시겠습니까?')) {
             deleteTodo(btn.getAttribute('data-date'), parseInt(btn.getAttribute('data-line')), btn.getAttribute('data-file'));
-          }
-        });
-      });
-      todoList.querySelectorAll('.todo-cal-sync').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-          var title = btn.getAttribute('data-text');
-          var due = btn.getAttribute('data-due');
-          if (confirm('"' + title + '" 일정을 구글 캘린더에 추가할까요?')) {
-            api('/calendar/add', {
-              method: 'POST',
-              body: JSON.stringify({
-                summary: title,
-                start: due,
-                end: due,
-                isAllDay: true
-              })
-            }).then(function(r) {
-              if (r.ok) showToast('일정이 추가되었습니다.', 'ok');
-              else showToast('일정 추가 실패', 'error');
-            });
           }
         });
       });
@@ -785,6 +841,117 @@ function handleCardComment(filename, cardEl) {
   inputDiv.style.display = inputDiv.style.display === 'none' ? 'block' : 'none';
 }
 
+function handleCardTags(filename, cardEl) {
+  var editor = cardEl.querySelector('.card-tag-editor');
+  if (!editor) return;
+  if (editor.style.display !== 'none') { editor.style.display = 'none'; return; }
+  editor.style.display = 'block';
+
+  var currentDiv = editor.querySelector('.tag-editor-current');
+  var sugDiv = editor.querySelector('.tag-editor-suggestions');
+  currentDiv.innerHTML = '<span style="color:var(--text2);font-size:12px">태그 로딩중...</span>';
+  sugDiv.innerHTML = '';
+
+  // Load current note tags and AI suggestions
+  api('/note/tags', { method: 'POST', body: JSON.stringify({ filename: filename }) })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      // Show current tags (removable)
+      var tags = data.currentTags || [];
+      currentDiv.innerHTML = '<div class="tag-editor-label">현재 태그:</div><div class="tag-editor-chips">' +
+        tags.map(function (t) {
+          return '<span class="tag-chip tag-chip-active" data-tag="' + esc(t) + '">#' + esc(t) + ' <span class="tag-remove">×</span></span>';
+        }).join('') + '</div>';
+
+      // Show AI suggestions (clickable to add)
+      var suggestions = data.suggestions || [];
+      if (suggestions.length) {
+        sugDiv.innerHTML = '<div class="tag-editor-label">AI 추천:</div><div class="tag-editor-chips">' +
+          suggestions.map(function (t) {
+            var isActive = tags.indexOf(t) !== -1;
+            return '<span class="tag-chip' + (isActive ? ' tag-chip-active' : ' tag-chip-suggestion') + '" data-tag="' + esc(t) + '">#' + esc(t) + '</span>';
+          }).join('') + '</div>';
+      }
+
+      // Bind chip clicks
+      bindTagChipEvents(editor);
+    })
+    .catch(function () {
+      currentDiv.innerHTML = '<span style="color:var(--red);font-size:12px">태그 로딩 실패</span>';
+    });
+}
+
+function bindTagChipEvents(editor) {
+  editor.querySelectorAll('.tag-chip').forEach(function (chip) {
+    chip.onclick = function (e) {
+      e.stopPropagation();
+      var removeBtn = e.target.closest('.tag-remove');
+      if (removeBtn) {
+        chip.remove();
+        return;
+      }
+      if (chip.classList.contains('tag-chip-suggestion')) {
+        chip.classList.remove('tag-chip-suggestion');
+        chip.classList.add('tag-chip-active');
+        // Move to current tags section
+        var currentChips = editor.querySelector('.tag-editor-current .tag-editor-chips');
+        if (currentChips) {
+          var clone = chip.cloneNode(false);
+          clone.innerHTML = '#' + esc(chip.getAttribute('data-tag')) + ' <span class="tag-remove">×</span>';
+          clone.classList.remove('tag-chip-suggestion');
+          clone.classList.add('tag-chip-active');
+          currentChips.appendChild(clone);
+          bindTagChipEvents(editor);
+        }
+      }
+    };
+  });
+}
+
+function addTagToEditor(editor, tag) {
+  var currentChips = editor.querySelector('.tag-editor-current .tag-editor-chips');
+  if (!currentChips) return;
+  // Check duplicate
+  var existing = currentChips.querySelectorAll('.tag-chip-active');
+  for (var i = 0; i < existing.length; i++) {
+    if (existing[i].getAttribute('data-tag') === tag) return;
+  }
+  var span = document.createElement('span');
+  span.className = 'tag-chip tag-chip-active';
+  span.setAttribute('data-tag', tag);
+  span.innerHTML = '#' + esc(tag) + ' <span class="tag-remove">×</span>';
+  currentChips.appendChild(span);
+  bindTagChipEvents(editor);
+}
+
+function saveCardTags(filename, editor) {
+  var chips = editor.querySelectorAll('.tag-editor-current .tag-chip-active');
+  var tags = [];
+  chips.forEach(function (c) { tags.push(c.getAttribute('data-tag')); });
+
+  api('/note/tags/save', { method: 'POST', body: JSON.stringify({ filename: filename, tags: tags }) })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.success) {
+        editor.style.display = 'none';
+        showToast('태그가 저장되었습니다', 'success');
+        // Update card tags display
+        var card = editor.closest('.search-result-item, .vault-item, .feed-card');
+        if (card) {
+          var tagDiv = card.querySelector('.card-tags');
+          if (tagDiv) {
+            tagDiv.innerHTML = tags.filter(function (t) { return t !== 'vaultvoice'; }).map(function (t) {
+              return '<span class="card-tag">#' + esc(t) + '</span>';
+            }).join('');
+          }
+        }
+      } else {
+        showToast('태그 저장 실패: ' + (data.error || ''), 'error');
+      }
+    })
+    .catch(function () { showToast('태그 저장 실패', 'error'); });
+}
+
 function submitCardComment(filename, comment, cardEl) {
   if (!comment.trim()) return;
   api('/note/comment', { method: 'POST', body: JSON.stringify({ filename: filename, comment: comment }) })
@@ -804,11 +971,10 @@ function submitCardComment(filename, comment, cardEl) {
 
 function handleCardJarvis(filename) {
   switchTab('ai', document.querySelector('.tab-btn[data-tab="ai"]'));
+  var msg = '노트 ' + filename + ' 에 대해 알려줘';
   var jarvisInputEl = document.getElementById('jarvis-input');
-  if (jarvisInputEl) {
-    jarvisInputEl.value = '노트 ' + filename + ' 에 대해 알려줘';
-    jarvisInputEl.focus();
-  }
+  if (jarvisInputEl) jarvisInputEl.value = '';
+  sendJarvis(msg);
 }
 
 function loadRelatedNotes(filename, containerEl) {
@@ -825,35 +991,80 @@ function loadRelatedNotes(filename, containerEl) {
     .catch(function () {});
 }
 
+// ---- Shared card action event delegation ----
+function bindCardActionEvents(container) {
+  // Clicking on .card-tags area opens tag editor
+  container.querySelectorAll('.card-tags:not([data-bound])').forEach(function (tagDiv) {
+    tagDiv.setAttribute('data-bound', '1');
+    tagDiv.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var card = tagDiv.closest('.search-result-item, .vault-item, .feed-card');
+      if (!card) return;
+      var editor = card.querySelector('.card-tag-editor');
+      var file = editor && editor.getAttribute('data-file');
+      if (file) handleCardTags(file, card);
+    });
+  });
+  container.querySelectorAll('.card-action-btn:not([data-bound])').forEach(function (btn) {
+    btn.setAttribute('data-bound', '1');
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var action = btn.getAttribute('data-action');
+      var file = btn.getAttribute('data-file');
+      var card = btn.closest('.search-result-item, .vault-item, .feed-card');
+      if (!card) return;
+      if (action === 'summarize') handleCardSummarize(file, card);
+      else if (action === 'comment') handleCardComment(file, card);
+      else if (action === 'tags') handleCardTags(file, card);
+      else if (action === 'jarvis') handleCardJarvis(file);
+      else if (action === 'delete') handleCardDelete(file);
+    });
+  });
+  container.querySelectorAll('[data-action="comment-submit"]:not([data-bound])').forEach(function (btn) {
+    btn.setAttribute('data-bound', '1');
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var file = btn.getAttribute('data-file');
+      var card = btn.closest('.search-result-item, .vault-item, .feed-card');
+      var textarea = card && card.querySelector('.card-comment-input textarea');
+      if (textarea) submitCardComment(file, textarea.value, card);
+    });
+  });
+  container.querySelectorAll('[data-action="tag-save"]:not([data-bound])').forEach(function (btn) {
+    btn.setAttribute('data-bound', '1');
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var file = btn.getAttribute('data-file');
+      var editor = btn.closest('.card-tag-editor');
+      if (editor) saveCardTags(file, editor);
+    });
+  });
+  container.querySelectorAll('.tag-manual-input:not([data-bound])').forEach(function (inp) {
+    inp.setAttribute('data-bound', '1');
+    inp.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        var tag = inp.value.trim();
+        if (!tag) return;
+        var editor = inp.closest('.card-tag-editor');
+        if (editor) {
+          addTagToEditor(editor, tag);
+          inp.value = '';
+        }
+      }
+    });
+    inp.addEventListener('click', function (e) { e.stopPropagation(); });
+  });
+}
+
 // ============================================================
 // Search Tab
 // ============================================================
 function loadHistoryFallback() {
   var histList = document.getElementById('hist-list');
-  var searchResults = document.getElementById('searchResults');
   if (!histList) return;
-  // Show recent notes as default
-  if (!searchResults.children.length) {
-    api('/notes/recent')
-      .then(function (r) { return r.json(); })
-      .then(function (d) {
-        if (!d.notes || !d.notes.length) {
-          histList.innerHTML = '<div class="empty">최근 기록 없음</div>';
-          histList.style.display = '';
-          return;
-        }
-        histList.innerHTML = d.notes.map(function (n) {
-          return '<div class="hist-item" data-date="' + n.date + '">' +
-            '<div class="hist-date">' + n.date + '</div>' +
-            '<div class="hist-preview">' + esc(n.preview) + '</div></div>';
-        }).join('');
-        histList.style.display = '';
-        histList.querySelectorAll('.hist-item').forEach(function (item) {
-          item.addEventListener('click', function () { openPreview(item.getAttribute('data-date')); });
-        });
-      })
-      .catch(function () { histList.innerHTML = '<div class="empty">로딩 실패</div>'; histList.style.display = ''; });
-  }
+  histList.style.display = 'none';
 }
 
 function openPreview(date) {
@@ -868,7 +1079,7 @@ function openPreview(date) {
 function closePreview() { document.getElementById('hist-overlay').style.display = 'none'; }
 
 // ── Note Detail: swipeable card view ──
-function openNoteDetail(filename) {
+function openNoteDetail(filename, noteList, currentIndex) {
   var overlay = document.getElementById('note-detail-overlay');
   var card = document.getElementById('note-detail-card');
   var bodyEl = document.getElementById('note-detail-body');
@@ -876,75 +1087,90 @@ function openNoteDetail(filename) {
   var timeEl = document.getElementById('note-detail-time');
   var tagsEl = document.getElementById('note-detail-tags');
   var indEl = document.getElementById('note-detail-indicator');
+  var prevBtn = document.getElementById('note-nav-prev');
+  var nextBtn = document.getElementById('note-nav-next');
+  var closeBtn = document.getElementById('note-detail-close');
+
+  // Resolve note list context
+  var notes = noteList || window._feedNotes || [];
+  var idx = typeof currentIndex === 'number' ? currentIndex :
+    notes.findIndex(function (n) { return n.filename === filename; });
+  window._noteDetailList = notes;
+  window._noteDetailIdx = idx;
 
   overlay.style.display = '';
   card.style.transform = '';
   card.style.opacity = '1';
   card.style.transition = '';
+  card.scrollTop = 0;
 
-  // Find current index in feed notes
-  var notes = window._feedNotes || [];
-  var idx = notes.findIndex(function (n) { return n.filename === filename; });
-  window._noteDetailIdx = idx;
-
-  // Show indicator
+  // Indicator + nav buttons
   if (notes.length > 1 && idx >= 0) {
     indEl.textContent = (idx + 1) + ' / ' + notes.length;
     indEl.style.display = '';
+    prevBtn.style.display = '';
+    nextBtn.style.display = '';
+    prevBtn.disabled = idx <= 0;
+    nextBtn.disabled = idx >= notes.length - 1;
   } else {
     indEl.style.display = 'none';
+    prevBtn.style.display = 'none';
+    nextBtn.style.display = 'none';
   }
 
-  // Use cached data from feed if available (instant load)
+  // Show cached preview first, then always fetch full note from API
   var cached = idx >= 0 ? notes[idx] : null;
-  if (cached && cached.body) {
+  if (cached) {
     var fm = cached.frontmatter || {};
-    var cardType = fm['유형'] || fm['source_type'] || 'memo';
-    var category = fm['category'] || '미분류';
-    var status = fm['status'] || '';
-
-    typeEl.innerHTML = '<span class="card-icon">' + typeIcon(cardType) + '</span>' + 
-                       '<span class="badge badge-category" style="margin-left:8px">' + esc(category) + '</span>';
-    if (status) {
-        var sLabel = status === 'processed' ? '분석됨' : (status === 'captured' ? '수집됨' : status);
-        var sClass = status === 'processed' ? 'badge ok' : 'badge';
-        typeEl.innerHTML += '<span class="' + sClass + '" style="margin-left:4px">' + esc(sLabel) + '</span>';
-    }
+    typeEl.innerHTML = typeIcon(fm['유형'] || 'memo');
     timeEl.textContent = fm['시간'] || '';
-    bodyEl.innerHTML = renderMd(cached.body);
+    bodyEl.innerHTML = renderMd(cached.body || '');
     var tags = (fm.tags || []).filter(function (t) { return t !== 'vaultvoice'; });
     tagsEl.innerHTML = tags.map(function (t) {
       return '<span class="card-tag">#' + esc(t) + '</span>';
     }).join('');
   } else {
+    typeEl.textContent = '';
+    timeEl.textContent = '';
+    tagsEl.innerHTML = '';
     bodyEl.innerHTML = '<div class="empty">로딩 중...</div>';
-    api('/note/' + encodeURIComponent(filename))
-      .then(function (r) { return r.json(); })
-      .then(function (d) {
-        var fm = d.frontmatter || {};
-        var cardType = fm['유형'] || fm['source_type'] || 'memo';
-        var category = fm['category'] || '미분류';
-        var status = fm['status'] || '';
-
-        typeEl.innerHTML = '<span class="card-icon">' + typeIcon(cardType) + '</span>' + 
-                           '<span class="badge badge-category" style="margin-left:8px">' + esc(category) + '</span>';
-        if (status) {
-            var sLabel = status === 'processed' ? '분석됨' : (status === 'captured' ? '수집됨' : status);
-            var sClass = status === 'processed' ? 'badge ok' : 'badge';
-            typeEl.innerHTML += '<span class="' + sClass + '" style="margin-left:4px">' + esc(sLabel) + '</span>';
-        }
-        timeEl.textContent = fm['시간'] || '';
-        bodyEl.innerHTML = renderMd(d.body || '');
-        var tags = (fm.tags || []).filter(function (t) { return t !== 'vaultvoice'; });
-        tagsEl.innerHTML = tags.map(function (t) {
-          return '<span class="card-tag">#' + esc(t) + '</span>';
-        }).join('');
-      })
-      .catch(function () { bodyEl.innerHTML = '<div class="empty">오류</div>'; });
   }
+  // Always fetch full note (cached body may be truncated)
+  api('/note/' + encodeURIComponent(filename))
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      var fm = d.frontmatter || {};
+      typeEl.innerHTML = typeIcon(fm['유형'] || 'memo');
+      timeEl.textContent = fm['시간'] || '';
+      bodyEl.innerHTML = renderMd(d.body || '');
+      var tags = (fm.tags || []).filter(function (t) { return t !== 'vaultvoice'; });
+      tagsEl.innerHTML = tags.map(function (t) {
+        return '<span class="card-tag">#' + esc(t) + '</span>';
+      }).join('');
+    })
+    .catch(function () { if (!cached) bodyEl.innerHTML = '<div class="empty">노트를 불러올 수 없습니다</div>'; });
 
   // Swipe gesture setup
   setupNoteSwipe(card, overlay);
+
+  // Nav button handlers (replace old ones)
+  prevBtn.onclick = function () { noteNavGo(-1); };
+  nextBtn.onclick = function () { noteNavGo(1); };
+  closeBtn.onclick = function () { closeNoteDetail(); };
+}
+
+function noteNavGo(dir) {
+  var notes = window._noteDetailList || [];
+  var idx = window._noteDetailIdx;
+  var next = idx + dir;
+  if (next < 0 || next >= notes.length) return;
+  var card = document.getElementById('note-detail-card');
+  card.style.transition = 'transform 0.25s ease, opacity 0.25s ease';
+  card.style.transform = 'translateX(' + (dir < 0 ? '60px' : '-60px') + ')';
+  card.style.opacity = '0.3';
+  setTimeout(function () {
+    openNoteDetail(notes[next].filename, notes, next);
+  }, 200);
 }
 
 function setupNoteSwipe(card, overlay) {
@@ -973,25 +1199,19 @@ function setupNoteSwipe(card, overlay) {
     swiping = false;
     var threshold = 100;
 
-    if (dx > threshold) {
-      // Right swipe → close (dismiss)
-      card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
-      card.style.transform = 'translateX(120%) rotate(10deg)';
-      card.style.opacity = '0';
-      setTimeout(function () { closeNoteDetail(); }, 300);
-    } else if (dx < -threshold) {
-      // Left swipe → next card
-      var notes = window._feedNotes || [];
+    if (Math.abs(dx) > threshold) {
+      // Left swipe → next, Right swipe → prev
+      var dir = dx < 0 ? 1 : -1;
+      var notes = window._noteDetailList || [];
       var curIdx = window._noteDetailIdx;
-      if (curIdx < 0) curIdx = 0;
-      var nextIdx = curIdx + 1;
-      if (nextIdx < notes.length) {
+      var targetIdx = curIdx + dir;
+      if (targetIdx >= 0 && targetIdx < notes.length) {
         card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
-        card.style.transform = 'translateX(-120%) rotate(-10deg)';
+        card.style.transform = 'translateX(' + (dx < 0 ? '-120%' : '120%') + ')';
         card.style.opacity = '0';
         setTimeout(function () {
-          openNoteDetail(notes[nextIdx].filename);
-        }, 300);
+          openNoteDetail(notes[targetIdx].filename, notes, targetIdx);
+        }, 250);
       } else {
         // Bounce back — no more cards
         card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
@@ -1031,7 +1251,7 @@ function closeNoteDetail() {
   card._noteSwipeClean && card._noteSwipeClean();
 }
 
-// Close on background tap
+// Close on background tap (not on card or close button)
 document.addEventListener('DOMContentLoaded', function () {
   var overlay = document.getElementById('note-detail-overlay');
   if (overlay) {
@@ -1069,23 +1289,47 @@ function doSearch() {
         resultsEl.innerHTML = '<div class="empty" style="padding:20px">"' + esc(q) + '" 검색 결과 없음</div>';
         return;
       }
+      // Build search result note list for swipe navigation
+      window._searchResults = d.results.map(function (r) {
+        return { filename: r.filename, body: r.matches.map(function (m) { return m.text; }).join('\n'), frontmatter: {} };
+      });
       var html = '<div class="search-summary">' + d.total + '개 노트에서 발견</div>';
-      html += d.results.map(function (r) {
-        var matchHtml = r.matches.map(function (m) {
-          var highlighted = esc(m.text).replace(
-            new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi'),
-            '<mark>$1</mark>'
-          );
-          return '<div class="search-result-match">' + highlighted + '</div>';
-        }).join('');
-        var pathHtml = r.path ? '<div style="font-size:11px;color:var(--text2);margin-top:2px">' + esc(r.path) + '</div>' : '';
-        return '<div class="search-result-item" data-date="' + r.date + '">' +
-          '<div class="search-result-date">' + esc(r.date) + '</div>' +
-          pathHtml + matchHtml + '</div>';
+      html += d.results.map(function (r, i) {
+        var typeMatch = (r.filename || '').match(/_([a-z]+)\.md$/);
+        var type = typeMatch ? typeMatch[1] : 'memo';
+        var dateMatch = (r.filename || '').match(/^(\d{4}-\d{2}-\d{2})_(\d{2})(\d{2})/);
+        var timeStr = dateMatch ? dateMatch[2] + ':' + dateMatch[3] : '';
+        // Body preview (always shown)
+        var previewText = r.preview || '';
+        var previewTrimmed = previewText.length > 300 ? previewText.substring(0, 300) + '...' : previewText;
+        var previewHighlighted = esc(previewTrimmed).replace(
+          new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi'),
+          '<mark>$1</mark>'
+        );
+        var matchHtml = previewHighlighted ? '<div class="card-body">' + linkifyUrls(previewHighlighted) + '</div>' : '';
+        var displayTitle = r.title || (r.filename || '').replace(/\.md$/, '');
+        var dateStr2 = r.dateStr || '';
+        return '<div class="search-result-item" data-filename="' + esc(r.filename || '') + '" data-idx="' + i + '">' +
+          '<div class="search-result-header">' +
+            '<span class="card-icon">' + typeIcon(type) + '</span>' +
+            '<span class="card-type-label">' + typeLabel(type) + '</span>' +
+            '<span class="search-result-title">\u300C' + esc(displayTitle) + '\u300D</span>' +
+            '<span class="card-time">' + (dateStr2 || timeStr) + '</span>' +
+          '</div>' +
+          matchHtml +
+          renderTagsHtml(r.tags) +
+          renderCardActions(esc(r.filename || '')) + '</div>';
       }).join('');
       resultsEl.innerHTML = html;
+      bindCardActionEvents(resultsEl);
       resultsEl.querySelectorAll('.search-result-item').forEach(function (item) {
-        item.addEventListener('click', function () { openPreview(item.getAttribute('data-date')); });
+        var fn = item.getAttribute('data-filename');
+        var idx = parseInt(item.getAttribute('data-idx'));
+        item.addEventListener('click', function (e) {
+          if (e.target.closest('a') || e.target.closest('.card-action-btn') || e.target.closest('.card-comment-input') || e.target.closest('.card-tags') || e.target.closest('.card-tag-editor')) return;
+          if (fn) openNoteDetail(fn, window._searchResults, idx);
+          else openPreview(item.getAttribute('data-date'));
+        });
       });
     })
     .catch(function (e) {
@@ -1122,24 +1366,47 @@ function doAISearch() {
             return '<span style="background:rgba(0,122,255,0.1);padding:2px 6px;border-radius:8px;margin:2px">' + esc(k) + '</span>';
           }).join(' ') + '</div>';
       }
+      // Build AI search result note list for swipe navigation
+      window._searchResults = d.results.map(function (r) {
+        return { filename: r.filename, body: r.matches.map(function (m) { return m.text; }).join('\n'), frontmatter: {} };
+      });
       var html = keywordsHtml + '<div class="search-summary">' + d.total + '개 노트에서 발견</div>';
-      html += d.results.map(function (r) {
-        var matchHtml = r.matches.map(function (m) {
-          var text = esc(m.text);
-          (m.keywords || []).forEach(function (k) {
-            var re = new RegExp('(' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
-            text = text.replace(re, '<mark>$1</mark>');
-          });
-          return '<div class="search-result-match">' + text + '</div>';
-        }).join('');
-        var pathHtml = r.path ? '<div style="font-size:11px;color:var(--text2);margin-top:2px">' + esc(r.path) + '</div>' : '';
-        return '<div class="search-result-item" data-date="' + r.date + '">' +
-          '<div class="search-result-date">' + esc(r.date) + '</div>' +
-          pathHtml + matchHtml + '</div>';
+      html += d.results.map(function (r, i) {
+        var typeMatch = (r.filename || '').match(/_([a-z]+)\.md$/);
+        var type = typeMatch ? typeMatch[1] : 'memo';
+        var dateMatch = (r.filename || '').match(/^(\d{4}-\d{2}-\d{2})_(\d{2})(\d{2})/);
+        var timeStr = dateMatch ? dateMatch[2] + ':' + dateMatch[3] : '';
+        var previewText2 = r.preview || '';
+        var previewTrimmed2 = previewText2.length > 300 ? previewText2.substring(0, 300) + '...' : previewText2;
+        var matchText = esc(previewTrimmed2);
+        (r.matches[0] && r.matches[0].keywords || []).forEach(function (k) {
+          var re = new RegExp('(' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+          matchText = matchText.replace(re, '<mark>$1</mark>');
+        });
+        var matchHtml = matchText ? '<div class="card-body">' + linkifyUrls(matchText) + '</div>' : '';
+        var displayTitle = r.title || (r.filename || '').replace(/\.md$/, '');
+        var dateStr2 = r.dateStr || '';
+        return '<div class="search-result-item" data-filename="' + esc(r.filename || '') + '" data-idx="' + i + '">' +
+          '<div class="search-result-header">' +
+            '<span class="card-icon">' + typeIcon(type) + '</span>' +
+            '<span class="card-type-label">' + typeLabel(type) + '</span>' +
+            '<span class="search-result-title">\u300C' + esc(displayTitle) + '\u300D</span>' +
+            '<span class="card-time">' + (dateStr2 || timeStr) + '</span>' +
+          '</div>' +
+          matchHtml +
+          renderTagsHtml(r.tags) +
+          renderCardActions(esc(r.filename || '')) + '</div>';
       }).join('');
       resultsEl.innerHTML = html;
+      bindCardActionEvents(resultsEl);
       resultsEl.querySelectorAll('.search-result-item').forEach(function (item) {
-        item.addEventListener('click', function () { openPreview(item.getAttribute('data-date')); });
+        var fn = item.getAttribute('data-filename');
+        var idx = parseInt(item.getAttribute('data-idx'));
+        item.addEventListener('click', function (e) {
+          if (e.target.closest('a') || e.target.closest('.card-action-btn') || e.target.closest('.card-comment-input') || e.target.closest('.card-tags') || e.target.closest('.card-tag-editor')) return;
+          if (fn) openNoteDetail(fn, window._searchResults, idx);
+          else openPreview(item.getAttribute('data-date'));
+        });
       });
     })
     .catch(function (e) {
@@ -1171,7 +1438,6 @@ function loadSettings() {
   renderReminderList();
   loadQRCode();
   checkCalendarStatus();
-  initPushUI();
 }
 
 var _calWasConnected = false;
@@ -1351,6 +1617,7 @@ function renderMd(md) {
     return '<img src="/api/attachments/' + encodeURIComponent(fname) + '" style="max-width:100%;border-radius:8px;margin:4px 0" alt="' + esc(fname) + '">';
   });
   h = h.replace(/\n\n+/g, '<br><br>');
+  h = linkifyUrls(h);
 
   // 3. Reinsert placeholders
   h = h.replace(/\x00PH(\d+)\x00/g, function (m, idx) {
@@ -1672,7 +1939,8 @@ function initJarvis() {
   if (!jarvisChat) return;
   jarvisSend.onclick = function () { sendJarvis(jarvisInput.value.trim()); };
   jarvisInput.onkeydown = function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendJarvis(jarvisInput.value.trim()); } };
-  jarvisReset.onclick = function () { jarvisChatHistory = []; clearJarvisHistory(); jarvisChat.innerHTML = ''; addJarvisWelcome(); setJarvisStatus(''); };
+  document.getElementById('jarvis-cancel').onclick = cancelJarvis;
+  jarvisReset.onclick = function () { cancelJarvis(); jarvisChatHistory = []; clearJarvisHistory(); jarvisChat.innerHTML = ''; addJarvisWelcome(); setJarvisStatus(''); };
   var jarvisExport = document.getElementById('jarvis-export');
   if (jarvisExport) jarvisExport.onclick = exportJarvisHistory;
   var saved = loadJarvisHistory();
@@ -1683,6 +1951,8 @@ function initJarvis() {
   }
   jarvisMic.onclick = toggleJarvisMic;
   jarvisChat.addEventListener('click', function (e) {
+    var noteLink = e.target.closest('.jarvis-note-link');
+    if (noteLink) { e.preventDefault(); openNoteDetail(noteLink.getAttribute('data-note')); return; }
     var hint = e.target.closest('.jarvis-hint');
     if (hint) { var msg = hint.getAttribute('data-msg'); if (msg) sendJarvis(msg); }
     var bubble = e.target.closest('.jarvis-bubble-bot');
@@ -1737,9 +2007,24 @@ function addToJarvisHistory(role, text) {
   saveJarvisHistory();
 }
 
+var jarvisAbortController = null;
+
+function cancelJarvis() {
+  if (jarvisAbortController) { jarvisAbortController.abort(); jarvisAbortController = null; }
+}
+
+function setJarvisSendingUI(sending) {
+  var sendBtn = document.getElementById('jarvis-send');
+  var cancelBtn = document.getElementById('jarvis-cancel');
+  if (sendBtn) sendBtn.style.display = sending ? 'none' : '';
+  if (cancelBtn) cancelBtn.style.display = sending ? '' : 'none';
+}
+
 function sendJarvis(text) {
   if (!text || jarvisIsSending) return;
   jarvisIsSending = true;
+  jarvisAbortController = new AbortController();
+  setJarvisSendingUI(true);
   stopTTS();
   hideOnboarding();
   var welcome = jarvisChat.querySelector('.jarvis-welcome');
@@ -1749,7 +2034,7 @@ function sendJarvis(text) {
   jarvisInput.value = '';
   var typingEl = addJarvisTyping();
   setJarvisStatus('응답 대기 중...');
-  api('/ai/chat', { method: 'POST', body: JSON.stringify({ message: text, history: jarvisChatHistory.slice(0, -1) }) })
+  api('/ai/chat', { method: 'POST', body: JSON.stringify({ message: text, history: jarvisChatHistory.slice(0, -1) }), signal: jarvisAbortController.signal })
     .then(function (r) { return r.json(); })
     .then(function (d) {
       typingEl.remove();
@@ -1759,8 +2044,12 @@ function sendJarvis(text) {
       setJarvisStatus('');
       speak(reply);
     })
-    .catch(function (e) { typingEl.remove(); addJarvisBubble('오류: ' + e.message, 'error'); setJarvisStatus(''); })
-    .then(function () { jarvisIsSending = false; });
+    .catch(function (e) {
+      typingEl.remove();
+      if (e.name === 'AbortError') { addJarvisBubble('취소됨', 'error'); setJarvisStatus(''); }
+      else { addJarvisBubble('오류: ' + e.message, 'error'); setJarvisStatus(''); }
+    })
+    .then(function () { jarvisIsSending = false; jarvisAbortController = null; setJarvisSendingUI(false); });
 }
 
 function addJarvisBubble(text, type) {
@@ -1793,8 +2082,15 @@ function renderJarvisMd(text) {
   var h = esc(text);
   h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // [노트: filename.md] pattern → clickable card link
+  h = h.replace(/\[노트:\s*([^\]]+\.md)\]/g, function (m, fn) {
+    return '<a href="#" class="jarvis-note-link" data-note="' + fn.trim() + '" style="display:inline-block;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:6px 10px;margin:4px 0;color:var(--accent);text-decoration:none">📄 ' + fn.trim() + '</a>';
+  });
+  // Make note filenames clickable (e.g. 2026-04-01_013228_voice.md)
+  h = h.replace(/(?<!")(\d{4}-\d{2}-\d{2}_\d{6}_\w+\.md)(?!")/g, '<a href="#" class="jarvis-note-link" data-note="$1">$1</a>');
   h = h.replace(/^[-•] (.+)$/gm, '<li>$1</li>');
   h = h.replace(/^\d+\.\s+(.+)$/gm, '<li>$1</li>');
+  h = linkifyUrls(h);
   h = h.replace(/\n/g, '<br>');
   return h;
 }
@@ -1824,33 +2120,69 @@ function stopTTS() {
   if (jarvisMic) jarvisMic.disabled = false;
 }
 function toggleJarvisMic() {
-  var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) { addJarvisBubble('이 브라우저에서는 음성 인식이 지원되지 않습니다.', 'error'); return; }
-  if (jarvisRecog) { jarvisRecog.stop(); jarvisRecog = null; jarvisMic.classList.remove('recording'); setJarvisStatus(''); return; }
+  // If already recording, stop and process
+  if (jarvisRecog) {
+    jarvisRecog.stop();
+    return;
+  }
   stopTTS();
-  jarvisRecog = new SpeechRecognition();
-  jarvisRecog.lang = 'ko-KR'; jarvisRecog.continuous = true; jarvisRecog.interimResults = true;
-  jarvisRecog.start();
-  jarvisMic.classList.add('recording'); setJarvisStatus('듣는 중...');
-  var finalTranscript = '';
-  jarvisRecog.onresult = function (e) {
-    var interim = '';
-    for (var i = e.resultIndex; i < e.results.length; i++) {
-      if (e.results[i].isFinal) finalTranscript += e.results[i][0].transcript;
-      else interim += e.results[i][0].transcript;
-    }
-    jarvisInput.value = finalTranscript + interim;
-    if (interim) setJarvisStatus(interim);
-  };
-  jarvisRecog.onend = function () {
-    jarvisRecog = null; jarvisMic.classList.remove('recording'); setJarvisStatus('');
-    var text = (finalTranscript || jarvisInput.value).trim();
-    if (text) sendJarvis(text);
-  };
-  jarvisRecog.onerror = function (e) {
-    if (e.error !== 'no-speech' && e.error !== 'aborted') { setJarvisStatus('음성 인식 오류: ' + e.error); setTimeout(function () { setJarvisStatus(''); }, 3000); }
-    jarvisRecog = null; jarvisMic.classList.remove('recording');
-  };
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    addJarvisBubble('이 브라우저에서는 마이크를 사용할 수 없습니다.', 'error');
+    return;
+  }
+
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+    var mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
+      : MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '';
+    var options = mimeType ? { mimeType: mimeType } : {};
+    var recorder = new MediaRecorder(stream, options);
+    var chunks = [];
+    jarvisRecog = recorder;
+
+    recorder.ondataavailable = function (e) { if (e.data.size > 0) chunks.push(e.data); };
+    recorder.onstart = function () {
+      jarvisMic.classList.add('recording');
+      setJarvisStatus('듣는 중... (탭하면 전송)');
+    };
+    recorder.onstop = function () {
+      jarvisRecog = null;
+      jarvisMic.classList.remove('recording');
+      stream.getTracks().forEach(function (t) { t.stop(); });
+
+      if (chunks.length === 0) { setJarvisStatus(''); return; }
+
+      var blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
+      setJarvisStatus('음성 변환 중...');
+      jarvisMic.disabled = true;
+
+      var formData = new FormData();
+      var ext = (mimeType || '').indexOf('mp4') !== -1 ? 'mp4' : 'webm';
+      formData.append('audio', blob, 'jarvis_voice.' + ext);
+
+      apiUpload('/ai/transcribe', formData)
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          jarvisMic.disabled = false;
+          if (data.text) {
+            setJarvisStatus('');
+            sendJarvis(data.text);
+          } else {
+            setJarvisStatus('음성을 인식하지 못했습니다');
+            setTimeout(function () { setJarvisStatus(''); }, 2000);
+          }
+        })
+        .catch(function (e) {
+          jarvisMic.disabled = false;
+          setJarvisStatus('음성 변환 오류');
+          setTimeout(function () { setJarvisStatus(''); }, 2000);
+        });
+    };
+
+    recorder.start();
+  }).catch(function (err) {
+    addJarvisBubble('마이크 권한이 필요합니다: ' + err.message, 'error');
+  });
 }
 
 // ============================================================
@@ -1873,6 +2205,29 @@ document.addEventListener('DOMContentLoaded', function () {
         })
         .catch(function (e) { status.textContent = '오류: ' + e.message; status.style.color = 'var(--red)'; })
         .finally(function () { reindexBtn.disabled = false; reindexBtn.textContent = '지식 베이스 구축 (최근 50개)'; });
+    });
+  }
+
+  // ---- Retag ----
+  var retagBtn = document.getElementById('retag-btn');
+  if (retagBtn) {
+    retagBtn.addEventListener('click', function () {
+      var status = document.getElementById('retag-status');
+      if (!confirm('최근 7일 노트의 태그를 AI로 재생성하시겠습니까?')) return;
+      retagBtn.disabled = true;
+      retagBtn.textContent = '태그 재생성 중...';
+      status.textContent = '노트를 분석하고 있습니다...';
+      status.style.color = 'var(--text2)';
+      api('/vault/retag', { method: 'POST', body: JSON.stringify({ days: 7 }) })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          var ok = d.results ? d.results.filter(function (r) { return r.status === 'ok'; }).length : 0;
+          var skip = d.results ? d.results.filter(function (r) { return r.status === 'skipped'; }).length : 0;
+          status.textContent = '완료! ' + ok + '개 업데이트, ' + skip + '개 건너뜀';
+          status.style.color = 'var(--green)';
+        })
+        .catch(function (e) { status.textContent = '오류: ' + e.message; status.style.color = 'var(--red)'; })
+        .finally(function () { retagBtn.disabled = false; retagBtn.textContent = '최근 7일 태그 재생성'; });
     });
   }
 
@@ -1969,8 +2324,6 @@ document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('clip-send').addEventListener('click', clipSend);
   document.getElementById('clip-recv').addEventListener('click', clipRecv);
   document.getElementById('run-test').addEventListener('click', runFeatureTest);
-  document.getElementById('push-subscribe-btn').addEventListener('click', subscribePush);
-  document.getElementById('push-unsubscribe-btn').addEventListener('click', unsubscribePush);
 
   // ---- Calendar event detection ----
   document.getElementById('event-detect-add').addEventListener('click', registerDetectedEvent);
@@ -1990,98 +2343,6 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('auth').style.display = '';
   }
 });
-
-// ============================================================
-// Web Push — Daily Briefing subscription (SR #4: urlB64ToUint8Array, SR #5: iOS gesture)
-// ============================================================
-function urlB64ToUint8Array(base64String) {
-  var padding = '='.repeat((4 - base64String.length % 4) % 4);
-  var base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  var rawData = atob(base64);
-  var outputArray = new Uint8Array(rawData.length);
-  for (var i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
-  return outputArray;
-}
-
-function updatePushUI(subscribed) {
-  var subBtn = document.getElementById('push-subscribe-btn');
-  var unsubBtn = document.getElementById('push-unsubscribe-btn');
-  var status = document.getElementById('push-status');
-  if (!subBtn) return;
-  if (subscribed) {
-    subBtn.style.display = 'none';
-    unsubBtn.style.display = '';
-    status.textContent = '알림 구독 중';
-  } else {
-    subBtn.style.display = '';
-    unsubBtn.style.display = 'none';
-    status.textContent = '';
-  }
-}
-
-function initPushUI() {
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-    var s = document.getElementById('push-status');
-    if (s) s.textContent = '이 브라우저는 푸시 알림을 지원하지 않습니다.';
-    return;
-  }
-  navigator.serviceWorker.ready.then(function (reg) {
-    reg.pushManager.getSubscription().then(function (sub) {
-      updatePushUI(!!sub);
-    });
-  });
-}
-
-function subscribePush() {
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
-  var status = document.getElementById('push-status');
-  if (status) status.textContent = '구독 중...';
-
-  api('/push/vapid-public-key')
-    .then(function (r) { return r.json(); })
-    .then(function (d) {
-      if (!d.publicKey) throw new Error('VAPID key unavailable');
-      return navigator.serviceWorker.ready.then(function (reg) {
-        return reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlB64ToUint8Array(d.publicKey)
-        });
-      });
-    })
-    .then(function (sub) {
-      return api('/push/subscribe', {
-        method: 'POST',
-        body: JSON.stringify(sub.toJSON())
-      });
-    })
-    .then(function () {
-      updatePushUI(true);
-      showToast('알림 구독 완료', 'ok');
-    })
-    .catch(function (e) {
-      if (status) status.textContent = '구독 실패: ' + e.message;
-    });
-}
-
-function unsubscribePush() {
-  navigator.serviceWorker.ready.then(function (reg) {
-    reg.pushManager.getSubscription().then(function (sub) {
-      if (!sub) { updatePushUI(false); return; }
-      var endpoint = sub.endpoint;
-      sub.unsubscribe().then(function () {
-        return api('/push/unsubscribe', {
-          method: 'DELETE',
-          body: JSON.stringify({ endpoint: endpoint })
-        });
-      }).then(function () {
-        updatePushUI(false);
-        showToast('알림 구독 해지됨', 'ok');
-      }).catch(function (e) {
-        showToast('해지 실패: ' + e.message, 'err');
-      });
-    });
-  });
-}
 
 // ============================================================
 // Service Worker
@@ -2104,4 +2365,187 @@ if ('serviceWorker' in navigator) {
       }
     });
   }).catch(function () {});
+}
+
+// ============================================================
+// Vault Browser
+// ============================================================
+var _vaultOffset = 0;
+var _vaultHasMore = false;
+var _vaultStatsLoaded = false;
+var _vaultFilterType = '';
+var _vaultFilterTag = '';
+
+function loadVaultBrowser() {
+  if (!_vaultStatsLoaded) {
+    _vaultStatsLoaded = true;
+    loadVaultStats();
+    // Stats toggle
+    document.getElementById('vault-stats-toggle').onclick = function () {
+      var statsEl = document.getElementById('vault-stats');
+      var arrow = this.querySelector('.vault-stats-arrow');
+      var open = statsEl.style.display !== 'none';
+      statsEl.style.display = open ? 'none' : '';
+      arrow.classList.toggle('open', !open);
+    };
+  }
+  _vaultOffset = 0;
+  loadVaultList(false);
+  document.getElementById('vault-load-more').onclick = function () { loadVaultList(true); };
+}
+
+function loadVaultStats() {
+  api('/vault/stats')
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      // Total count
+      document.getElementById('vault-stats-total').textContent = d.total + '개 노트';
+
+      // Stats detail (hidden by default)
+      var el = document.getElementById('vault-stats');
+      var known = ['voice', 'image', 'url', 'memo', 'todo', 'other'];
+      var types = Object.entries(d.types || {}).sort(function (a, b) { return b[1] - a[1]; });
+      var maxCount = types.length ? types[0][1] : 1;
+      el.innerHTML = types.map(function (t) {
+        var pct = Math.round(t[1] / maxCount * 100);
+        var label = known.indexOf(t[0]) >= 0 ? typeLabel(t[0]) : t[0];
+        return '<div class="vault-stat-row">' +
+          '<span class="vault-stat-icon">' + typeIcon(t[0]) + '</span>' +
+          '<span class="vault-stat-label">' + esc(label) + '</span>' +
+          '<div class="vault-stat-bar"><div class="vault-stat-fill" style="width:' + pct + '%"></div></div>' +
+          '<span class="vault-stat-count">' + t[1] + '</span>' +
+          '</div>';
+      }).join('');
+
+      // Type chips (SVG icons)
+      var typeChips = document.getElementById('vault-type-chips');
+      var chipHtml = '<button class="chip active" data-type="">' + typeIcon('other', 14) + ' 전체</button>';
+      known.forEach(function (k) {
+        if (d.types[k]) chipHtml += '<button class="chip" data-type="' + k + '">' + typeIcon(k, 14) + ' ' + typeLabel(k) + ' ' + d.types[k] + '</button>';
+      });
+      typeChips.innerHTML = chipHtml;
+      typeChips.querySelectorAll('.chip').forEach(function (chip) {
+        chip.onclick = function () {
+          typeChips.querySelectorAll('.chip').forEach(function (c) { c.classList.remove('active'); });
+          chip.classList.add('active');
+          _vaultFilterType = chip.getAttribute('data-type');
+          _vaultOffset = 0;
+          loadVaultList(false);
+        };
+      });
+
+      // Tag grid (A+C: 2-row grid + expand, exclude type-duplicate tags)
+      var tagChips = document.getElementById('vault-tag-chips');
+      var typeDupes = ['voice', 'image', 'url', 'memo', 'todo', 'other', 'error'];
+      var tags = Object.entries(d.tags || {})
+        .filter(function (t) { return typeDupes.indexOf(t[0]) < 0; })
+        .sort(function (a, b) { return b[1] - a[1]; });
+      if (tags.length) {
+        var visibleCount = 8;
+        var tagHtml = '<button class="chip active" data-tag="">전체</button>';
+        tags.forEach(function (t, i) {
+          var hiddenClass = i >= visibleCount ? ' tag-hidden' : '';
+          tagHtml += '<button class="chip' + hiddenClass + '" data-tag="' + esc(t[0]) + '">' + esc(t[0]) + ' <span class="chip-count">' + t[1] + '</span></button>';
+        });
+        if (tags.length > visibleCount) {
+          tagHtml += '<button class="chip chip-more" id="vault-tag-more">+ ' + (tags.length - visibleCount) + '개</button>';
+        }
+        tagChips.innerHTML = tagHtml;
+        // Expand button
+        var moreBtn = document.getElementById('vault-tag-more');
+        if (moreBtn) {
+          moreBtn.onclick = function () {
+            var isExpanded = moreBtn.getAttribute('data-expanded') === '1';
+            if (isExpanded) {
+              tagChips.querySelectorAll('.chip[data-tag]').forEach(function (el, i) { if (i >= visibleCount + 1) el.classList.add('tag-hidden'); });
+              moreBtn.textContent = '+ ' + (tags.length - visibleCount) + '개';
+              moreBtn.setAttribute('data-expanded', '0');
+            } else {
+              tagChips.querySelectorAll('.tag-hidden').forEach(function (el) { el.classList.remove('tag-hidden'); });
+              moreBtn.textContent = '접기';
+              moreBtn.setAttribute('data-expanded', '1');
+            }
+          };
+        }
+        tagChips.querySelectorAll('.chip:not(.chip-more)').forEach(function (chip) {
+          chip.onclick = function () {
+            tagChips.querySelectorAll('.chip').forEach(function (c) { c.classList.remove('active'); });
+            chip.classList.add('active');
+            _vaultFilterTag = chip.getAttribute('data-tag');
+            _vaultOffset = 0;
+            loadVaultList(false);
+          };
+        });
+      }
+    })
+    .catch(function () {});
+}
+
+function loadVaultList(append) {
+  var listEl = document.getElementById('vault-list');
+  var loadMore = document.getElementById('vault-load-more');
+  var filterType = _vaultFilterType || '';
+  var filterTag = _vaultFilterTag || '';
+
+  if (!append) {
+    listEl.innerHTML = '<div class="empty" style="padding:16px">로딩 중...</div>';
+  }
+
+  var params = new URLSearchParams({ offset: _vaultOffset, limit: 30 });
+  if (filterType) params.append('type', filterType);
+  if (filterTag) params.append('tag', filterTag);
+
+  api('/vault/browse?' + params.toString())
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      window._browseResults = window._browseResults || [];
+      if (!append) window._browseResults = [];
+
+      var startIdx = window._browseResults.length;
+      var newNotes = d.results.map(function (r) {
+        return { filename: r.filename, body: r.preview || '', frontmatter: r.frontmatter || {} };
+      });
+      window._browseResults = window._browseResults.concat(newNotes);
+
+      var html = d.results.map(function (r, i) {
+        var idx = startIdx + i;
+        return '<div class="vault-item" data-filename="' + esc(r.filename) + '" data-idx="' + idx + '">' +
+          '<div class="vault-item-header">' +
+            '<span class="card-icon">' + typeIcon(r.type) + '</span>' +
+            '<span class="card-type-label">' + typeLabel(r.type) + '</span>' +
+            '<span class="vault-item-title">\u300C' + esc(r.title || r.filename) + '\u300D</span>' +
+            '<span class="card-time">' + esc(r.date || '') + '</span>' +
+          '</div>' +
+          (r.preview ? '<div class="vault-item-preview">' + linkifyUrls(esc(r.preview.length > 300 ? r.preview.substring(0, 300) + '...' : r.preview)) + '</div>' : '') +
+          renderTagsHtml(r.frontmatter && Array.isArray(r.frontmatter.tags) ? r.frontmatter.tags.filter(function(t) { return t !== 'vaultvoice'; }) : []) +
+          renderCardActions(esc(r.filename)) +
+          '</div>';
+      }).join('');
+
+      if (append) {
+        listEl.insertAdjacentHTML('beforeend', html);
+      } else {
+        listEl.innerHTML = d.results.length ? html : '<div class="empty" style="padding:20px">노트 없음</div>';
+      }
+
+      _vaultOffset += d.results.length;
+      _vaultHasMore = d.hasMore;
+      loadMore.style.display = d.hasMore ? '' : 'none';
+
+      bindCardActionEvents(listEl);
+
+      // Click handlers for new items
+      listEl.querySelectorAll('.vault-item:not([data-bound])').forEach(function (item) {
+        item.setAttribute('data-bound', '1');
+        item.addEventListener('click', function (e) {
+          if (e.target.closest('a') || e.target.closest('.card-action-btn') || e.target.closest('.card-comment-input') || e.target.closest('.card-tags') || e.target.closest('.card-tag-editor')) return;
+          var fn = item.getAttribute('data-filename');
+          var idx = parseInt(item.getAttribute('data-idx'));
+          if (fn) openNoteDetail(fn, window._browseResults, idx);
+        });
+      });
+    })
+    .catch(function (e) {
+      if (!append) listEl.innerHTML = '<div class="empty">오류: ' + esc(e.message) + '</div>';
+    });
 }

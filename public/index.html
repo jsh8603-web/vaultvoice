@@ -9,7 +9,7 @@
 <meta name="theme-color" content="#0a0a0a">
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
-<link rel="stylesheet" href="/app.css?v=3.0">
+<link rel="stylesheet" href="/app.css">
 <title>VaultVoice</title>
 </head>
 <body>
@@ -144,13 +144,16 @@
     <div id="note-detail-overlay" class="note-overlay-bg" style="display:none">
       <div id="note-detail-card" class="note-detail-card">
         <div class="note-detail-header">
+          <button id="note-nav-prev" class="note-nav-btn" title="이전">&#8249;</button>
           <span id="note-detail-type" class="card-icon"></span>
           <span id="note-detail-time" class="card-time"></span>
           <span id="note-detail-indicator" class="card-indicator"></span>
+          <button id="note-nav-next" class="note-nav-btn" title="다음">&#8250;</button>
         </div>
         <div id="note-detail-body" class="note-detail-body"></div>
         <div id="note-detail-tags" class="card-tags"></div>
       </div>
+      <button id="note-detail-close" class="note-close-btn" title="닫기">&times;</button>
     </div>
 
     <!-- 설정 탭 -->
@@ -198,6 +201,14 @@
         <div id="reindex-status" style="margin-top:8px;font-size:12px;color:var(--text2)"></div>
       </div>
 
+      <!-- Auto Retag -->
+      <div class="s-group">
+        <h2>태그 재생성</h2>
+        <p class="s-desc">최근 노트의 태그를 AI가 다시 분석하여 구체적이고 의미있는 태그로 교체합니다.</p>
+        <button class="btn-sm btn-full btn-accent-purple" id="retag-btn">최근 7일 태그 재생성</button>
+        <div id="retag-status" style="margin-top:8px;font-size:12px;color:var(--text2)"></div>
+      </div>
+
       <!-- Google Calendar -->
       <div class="s-group">
         <h2>구글 캘린더 연동</h2>
@@ -216,17 +227,6 @@
         </div>
       </div>
 
-      <!-- 데일리 브리핑 푸시 알림 -->
-      <div class="s-group">
-        <h2>데일리 브리핑 알림</h2>
-        <p class="s-desc">매일 07:30 브리핑을 푸시 알림으로 받습니다. 홈 화면에 추가 후 사용하세요.</p>
-        <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
-          <button class="btn-sm btn-accent-purple" id="push-subscribe-btn" style="flex:1">알림 구독</button>
-          <button class="btn-sm" id="push-unsubscribe-btn" style="flex:1;display:none">구독 해지</button>
-        </div>
-        <div id="push-status" style="font-size:12px;color:var(--text2);margin-top:6px;text-align:center"></div>
-      </div>
-
       <!-- 알림 목록 -->
       <div class="s-group">
         <h2>알림 목록</h2>
@@ -243,15 +243,15 @@
           </div>
           <div class="help-item">
             <strong>피드 탭</strong>
-            <p>날짜별로 저장된 메모를 카드 형태로 조회합니다. 각 카드에서 AI 요약, 코멘트 추가, Jarvis 연동, 삭제가 가능하며, 관련 노트 추천도 제공합니다.</p>
+            <p>날짜별로 저장된 메모를 카드 형태로 조회합니다. 각 카드에서 AI 요약, 코멘트 추가, Jarvis 연동, 삭제가 가능합니다. 카드 클릭 후 좌우 스와이프로 노트 간 이동합니다.</p>
           </div>
           <div class="help-item">
             <strong>검색 탭</strong>
-            <p>키워드 검색과 AI 시맨틱 검색을 지원합니다. 유형·날짜 필터로 범위를 좁힐 수 있고, 볼트 전체 검색 옵션도 있습니다.</p>
+            <p>키워드 검색과 AI 시맨틱 검색을 지원합니다. 검색 결과 카드에서 AI 요약·코멘트·Jarvis 연동이 가능하며, 스와이프로 노트 간 이동할 수 있습니다.</p>
           </div>
           <div class="help-item">
-            <strong>관리 탭</strong>
-            <p>Obsidian 볼트의 파일을 직접 탐색·읽기·쓰기·이동·삭제할 수 있는 파일 관리자입니다.</p>
+            <strong>브라우저 탭</strong>
+            <p>볼트 전체 노트를 탐색합니다. 유형별·태그별 칩 필터로 빠르게 분류하고, 각 카드에서 AI 요약·코멘트·Jarvis 연동이 가능합니다.</p>
           </div>
           <div class="help-item">
             <strong>QR 코드</strong>
@@ -279,7 +279,7 @@
       <div class="s-group">
         <button class="btn-danger" id="logout-btn">로그아웃</button>
       </div>
-      <div class="ver">VaultVoice v3.0</div>
+      <div class="ver">VaultVoice v3.3</div>
     </section>
 
     <!-- AI 탭 (Jarvis) -->
@@ -319,19 +319,23 @@
         <div class="jarvis-input-area">
           <input type="text" id="jarvis-input" class="jarvis-input" placeholder="메시지 입력..." autocomplete="off">
           <button id="jarvis-send" class="jarvis-send-btn" title="전송"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
+          <button id="jarvis-cancel" class="jarvis-cancel-btn" style="display:none" title="취소"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
           <button id="jarvis-mic" class="jarvis-mic-btn" title="음성 입력"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
         </div>
       </div>
     </section>
 
-    <!-- 관리 탭 (vault.html로 이동) -->
+    <!-- 브라우저 탭 (볼트 전체 탐색) -->
     <section id="p-vault" class="tab-panel">
-      <div class="s-group" style="text-align:center;padding:32px 16px">
-        <div class="vault-icon"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="var(--text2)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></div>
-        <h2 style="font-size:16px;font-weight:600;color:var(--text);text-transform:none;margin-bottom:8px">볼트 관리자</h2>
-        <p style="font-size:14px;color:var(--text2);margin-bottom:16px">파일 탐색, 읽기/쓰기, 이동, 백링크 등 볼트 전체 관리</p>
-        <a href="/vault" class="btn" style="display:inline-block;width:auto;padding:12px 32px;text-decoration:none">볼트 관리자 열기</a>
+      <div class="vault-stats-toggle" id="vault-stats-toggle">
+        <span id="vault-stats-total">0개 노트</span>
+        <span class="vault-stats-arrow">▼</span>
       </div>
+      <div id="vault-stats" class="vault-stats" style="display:none"></div>
+      <div id="vault-type-chips" class="chip-row"></div>
+      <div id="vault-tag-chips" class="chip-row"></div>
+      <div id="vault-list" class="vault-list"></div>
+      <button id="vault-load-more" class="btn-small" style="display:none;margin:16px auto">더 보기</button>
     </section>
 
   </main>
@@ -363,7 +367,7 @@
     </button>
     <button class="tab-btn" data-tab="vault">
       <svg class="tab-svg" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-      <span class="tab-label">관리</span>
+      <span class="tab-label">브라우저</span>
     </button>
   </nav>
 </div>
@@ -400,27 +404,14 @@
 <div id="jarvis-overlay" style="display:none"></div>
 
 <script>
-// Force SW update + nuke old caches on every page load
+// SW update check on every page load
 (function() {
   if (!('serviceWorker' in navigator)) return;
-  var TARGET_VER = 'vaultvoice-v3.0';
-  // Check if we need a hard refresh
-  if (!sessionStorage.getItem('vv_v30')) {
-    caches.keys().then(function(keys) {
-      var stale = keys.filter(function(k) { return k !== TARGET_VER; });
-      if (stale.length > 0) {
-        Promise.all(stale.map(function(k) { return caches.delete(k); })).then(function() {
-          sessionStorage.setItem('vv_v30', '1');
-          location.reload();
-        });
-      }
-    });
-  }
   navigator.serviceWorker.getRegistration().then(function(reg) {
     if (reg) reg.update();
   });
 })();
 </script>
-<script src="/app.js?v=3.0"></script>
+<script src="/app.js"></script>
 </body>
 </html>
