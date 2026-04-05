@@ -211,7 +211,7 @@ const OBSIDIAN_REST_API_KEY = process.env.OBSIDIAN_REST_API_KEY || '';
 
 app.set('trust proxy', 1); // Trust first proxy (Cloudflare tunnel)
 app.use(compression());
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 
 // Cache policy: SW always no-cache; JS/CSS use ETag revalidation; images cache 1h
 app.use((req, res, next) => {
@@ -668,6 +668,7 @@ app.post('/api/todo/toggle', (req, res) => {
   }
 
   fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+  noteCache.invalidate(path.basename(filePath));
   res.json({ success: true, toggled: lineIndex });
 });
 
@@ -701,6 +702,7 @@ app.post('/api/todo/delete', auth, (req, res) => {
 
   lines.splice(lineIndex, 1);
   fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+  noteCache.invalidate(path.basename(filePath));
   res.json({ success: true, deleted: lineIndex });
 });
 
@@ -1270,6 +1272,7 @@ async function executeReanalyzePerspective(args) {
   fs.writeFileSync(filePath, serializeFrontmatter(fm) + body, 'utf-8');
   const freshRaw = fs.readFileSync(filePath, 'utf-8');
   await applyPerspectiveFilters(filePath, freshRaw);
+  noteCache.invalidate(args.filename);
   return { result: `"${args.filename}" Multi-Lens 분석을 재실행했습니다.` };
 }
 
@@ -2668,7 +2671,22 @@ app.get('/api/search', async (req, res) => {
       if (matches.length > 0) {
         const relPath = path.relative(VAULT_PATH, fp).replace(/\\/g, '/');
         const name = path.basename(fp, '.md');
-        results.push({ date: name, path: relPath, matches });
+        const filename = path.basename(fp);
+        // Extract title and tags from frontmatter for client
+        let title = '';
+        let tags = [];
+        let dateStr = '';
+        const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+        if (fmMatch) {
+          const titleMatch = fmMatch[1].match(/^title:\s*(.+)$/m);
+          if (titleMatch) title = titleMatch[1].trim().replace(/^["']|["']$/g, '');
+          const tagsMatch = fmMatch[1].match(/^tags:\s*\[([^\]]*)\]/m);
+          if (tagsMatch) tags = tagsMatch[1].split(',').map(t => t.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+          const dateMatch = fmMatch[1].match(/^date:\s*(.+)$/m);
+          if (dateMatch) dateStr = dateMatch[1].trim();
+        }
+        const preview = matches.map(m => m.text).join(' ').substring(0, 400);
+        results.push({ date: name, path: relPath, matches, filename, title, tags, dateStr, preview });
       }
     }
   }
@@ -2892,6 +2910,53 @@ function getPipelineQueue(filePath) {
   return _pipelineQueues.get(filePath);
 }
 
+const SPEAKER_LABEL_PATTERN = /^(화자|Speaker)\s*\d+$/i;
+
+async function resolveSpeakers(filePath) {
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  const { frontmatter: fm, body } = parseFrontmatter(raw);
+  const speakers = fm.speakers || [];
+  const unresolved = speakers.filter(s => SPEAKER_LABEL_PATTERN.test(String(s).trim()));
+  if (unresolved.length === 0) return;
+
+  const entityMap = getEntityMap();
+  const personList = Object.keys(entityMap?.persons || {}).slice(0, 20);
+
+  const prompt = `음성 전사 메모에서 화자 레이블을 실제 인물로 매핑하라.
+알려진 인물 목록: ${personList.join(', ') || '없음'}
+미해소 화자: ${unresolved.join(', ')}
+메모 본문 (앞 300자): ${body.trim().slice(0, 300)}
+
+JSON으로만 응답: { "화자1": { "name": "실제이름 또는 null", "confidence": 0.0~1.0 }, ... }`;
+
+  let resolved;
+  try {
+    const model = getGeminiModel('flash');
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().replace(/```json\n?|\n?```/g, '').trim();
+    resolved = JSON.parse(text);
+  } catch (e) {
+    console.warn('[speakerResolve] Gemini call failed:', e.message);
+    return;
+  }
+
+  const autoMap = {};
+  const candidates = {};
+  for (const [label, { name, confidence }] of Object.entries(resolved || {})) {
+    if (!name) continue;
+    if (confidence >= 0.7) autoMap[label] = name;
+    else candidates[label] = { name, confidence };
+  }
+
+  if (Object.keys(autoMap).length === 0 && Object.keys(candidates).length === 0) return;
+
+  const newSpeakers = speakers.map(s => autoMap[String(s).trim()] || s);
+  fm.speakers = newSpeakers;
+  if (Object.keys(candidates).length > 0) fm.speaker_candidates = candidates;
+  fs.writeFileSync(filePath, serializeFrontmatter(fm) + body, 'utf-8');
+  console.log('[speakerResolve] Resolved:', autoMap, 'Candidates:', candidates);
+}
+
 async function runPipeline(filePath, stages) {
   return getPipelineQueue(filePath).add(async () => {
     for (const stage of stages) {
@@ -2947,7 +3012,7 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
     'source_type': type,
     '유형': type,
     'category': '',
-    'status': 'fleeting',
+    'status': 'raw',
     'tags': unique,
     'topic': [],
     'title': '',
@@ -2974,6 +3039,9 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
   invalidateFileCache();
   noteCache.invalidate(filename);
 
+  // E10: pipeline ID for SSE progress
+  const pipelineId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
   // Async AI pipeline — each stage independent, no cascade failures
   if (GEMINI_API_KEY && GEMINI_API_KEY !== 'your_key_here') {
     let nerResultForContext = null; // Sub 2-3: closure — nerStage → contextStage 공유
@@ -2987,6 +3055,11 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
           injectMetaToFrontmatter(fp, meta);
           if (meta.title) { titleCache[filename] = meta.title; _compiledRegexMap.set(filename, _buildRegex(meta.title)); }
           console.log(`[Meta] Generated for ${filename}: ${meta.title}`);
+          emitPipelineProgress(pipelineId, 'meta', 'done');
+          const cur = fs.readFileSync(fp, 'utf-8');
+          const { frontmatter: fmS, body: bS } = parseFrontmatter(cur);
+          fmS.status = 'processed';
+          fs.writeFileSync(fp, serializeFrontmatter(fmS) + bS, 'utf-8');
         }
       },
       async function nerStage(fp) {
@@ -2996,6 +3069,9 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
           updateEntityFrontmatter(fp, result.nerResult.entities);
           nerResultForContext = result.nerResult; // Sub 2-3: contextStage에서 사용
         }
+      },
+      async function speakerResolveStage(fp) {
+        await resolveSpeakers(fp);
       },
       async function contextStage(fp) {
         if (!nerResultForContext?.entities) return;
@@ -3009,6 +3085,11 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
       async function perspectiveStage(fp) {
         const raw = fs.readFileSync(fp, 'utf-8');
         await applyPerspectiveFilters(fp, raw);
+        const cur2 = fs.readFileSync(fp, 'utf-8');
+        const { frontmatter: fmA, body: bA } = parseFrontmatter(cur2);
+        fmA.status = 'analyzed';
+        fs.writeFileSync(fp, serializeFrontmatter(fmA) + bA, 'utf-8');
+        emitPipelineProgress(pipelineId, 'perspective', 'done');
       },
       async function actionItemsStage(fp) {
         const raw = fs.readFileSync(fp, 'utf-8');
@@ -3049,7 +3130,8 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
         await updateVectorIndex(fp, finalBody);
         noteCache.invalidate(path.basename(fp));
       }
-    ]).catch(e => console.warn('[Pipeline] Unexpected error:', e.message));
+    ]).then(() => emitPipelineProgress(pipelineId, 'all', 'done'))
+      .catch(e => console.warn('[Pipeline] Unexpected error:', e.message));
 
     // Sub 4-3: Date Conflict — setImmediate, 파이프라인 외부 비동기 실행
     setImmediate(() => detectDateConflicts(filePath, linkedEntry)
@@ -3072,7 +3154,7 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
     });
   }
 
-  return { created: true, filename, filePath };
+  return { created: true, filename, filePath, pipelineId };
 }
 
 // Task emoji helpers (Obsidian Tasks plugin compatibility)
@@ -4228,7 +4310,22 @@ app.post('/api/process/audio', auth, uploadLimiter, upload.single('file'), async
       required: ['summary', 'participants', 'transcript', 'quality_check']
     };
 
-    const prompt = `Transcribe this audio file. Auto-detect the language (Korean, English, or mixed).
+    // SR Directive 3: inject entity_map hints for hotword boosting
+    const entityMap = getEntityMap();
+    const hotwordHint = (() => {
+      if (!entityMap) return '';
+      const persons  = Object.keys(entityMap.persons  || {}).slice(0, 15).join(', ');
+      const places   = Object.keys(entityMap.places   || {}).slice(0, 10).join(', ');
+      const projects = Object.keys(entityMap.projects || {}).slice(0, 10).join(', ');
+      const parts = [];
+      if (persons)  parts.push(`인물: ${persons}`);
+      if (places)   parts.push(`장소: ${places}`);
+      if (projects) parts.push(`프로젝트: ${projects}`);
+      if (!parts.length) return '';
+      return `\n\n다음 고유명사가 등장할 가능성이 높습니다 (정확한 표기로 전사하세요):\n${parts.join('\n')}`;
+    })();
+
+    const prompt = `Transcribe this audio file. Auto-detect the language (Korean, English, or mixed).${hotwordHint}
 
 Return JSON with:
 1. summary: 2-3 sentence summary of the conversation (in the detected language)
@@ -4933,6 +5030,44 @@ app.get('/api/feed/:date', auth, (req, res) => {
   res.json({ date, notes });
 });
 
+// E10: SSE pipeline progress
+const _sseClients = new Map(); // pipelineId → res
+
+app.get('/api/pipeline/progress', (req, res, next) => {
+  // Allow query-param key for EventSource (can't set headers)
+  const qKey = (req.query.key || '').trim();
+  if (qKey === API_KEY) return next();
+  auth(req, res, next);
+}, (req, res) => {
+  const id = req.query.id;
+  if (!id) return res.status(400).json({ error: 'id required' });
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+  _sseClients.set(id, res);
+  req.on('close', () => { _sseClients.delete(id); });
+});
+
+function emitPipelineProgress(pipelineId, stage, status) {
+  const res = _sseClients.get(pipelineId);
+  if (!res) return;
+  res.write(`data: ${JSON.stringify({ stage, status })}\n\n`);
+  if (status === 'done') { res.end(); _sseClients.delete(pipelineId); }
+}
+
+// Get dates with notes for a given month (E11 calendar dots)
+app.get('/api/feed/month/:month', auth, (req, res) => {
+  const { month } = req.params;
+  if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ error: 'Use YYYY-MM' });
+  const files = fs.existsSync(NOTES_DIR) ? fs.readdirSync(NOTES_DIR) : [];
+  const dates = [...new Set(
+    files.filter(f => f.startsWith(month + '-') && f.endsWith('.md'))
+         .map(f => f.slice(0, 10))
+  )].sort();
+  res.json({ month, dates });
+});
+
 // Get individual note by filename
 app.get('/api/note/:filename', auth, (req, res) => {
   const { filename } = req.params;
@@ -4953,7 +5088,7 @@ app.post('/api/process/text', auth, (req, res) => {
   const { content, tags = [], date } = req.body;
   if (!content) return res.status(400).json({ error: 'content required' });
   const noteDate = date || new Date().toISOString().split('T')[0];
-  const result = createAtomicNote(noteDate, 'memo', content, tags);
+  const result = createAtomicNote(noteDate, 'memo', content, ['memo', ...tags]);
   res.json({ ok: true, ...result });
 });
 
@@ -5067,6 +5202,7 @@ function appendCommentToNote(filePath, refined) {
     ? raw + '\n' + line
     : raw.trimEnd() + '\n\n## 코멘트\n\n' + line + '\n';
   fs.writeFileSync(filePath, updated, 'utf-8');
+  noteCache.invalidate(path.basename(filePath));
 }
 
 // ============================================================
@@ -5178,6 +5314,7 @@ app.post('/api/notes/backfill-titles', auth, async (req, res) => {
         const meta = await generateNoteMeta(raw);
         if (meta) {
           injectMetaToFrontmatter(path.join(NOTES_DIR, f), meta);
+          noteCache.invalidate(f);
           if (meta.title) { titleCache[f] = meta.title; _compiledRegexMap.set(f, _buildRegex(meta.title)); }
           updated++;
         }
@@ -5200,7 +5337,8 @@ const NOTE_META_SCHEMA = {
     mood:     { type: 'string', enum: ['Positive', 'Neutral', 'Negative'] },
     priority: { type: 'string', enum: ['High', 'Medium', 'Low'] },
     area:     { type: 'string', enum: ['Career', 'Health', 'Finance', 'Family', 'Personal'] },
-    project:  { type: 'string', description: '프로젝트명 (없으면 빈 문자열)' }
+    project:  { type: 'string', description: '프로젝트명 (없으면 빈 문자열)' },
+    tags:     { type: 'array', items: { type: 'string' }, description: '관련 한국어 태그 3-5개' }
   },
   required: ['title', 'summary', 'type', 'mood', 'priority']
 };
@@ -5216,6 +5354,7 @@ async function generateNoteMeta(rawOrBody) {
 - priority: High|Medium|Low
 - area: Career|Health|Finance|Family|Personal (가장 관련도 높은 단일값, 없으면 생략)
 - project: 프로젝트명 (없으면 생략)
+- tags: 관련 한국어 태그 3-5개 (예: 회의, AI, 리서치)
 
 노트 내용:
 ${maskedBody.slice(0, 1500)}`;
@@ -5264,6 +5403,7 @@ function injectMetaToFrontmatter(filePath, meta) {
   if (meta.priority) fm.priority = meta.priority;
   if (meta.area)     fm.area     = meta.area;
   if (meta.project)  fm.project  = meta.project;
+  if (meta.tags)     fm.tags     = [...new Set([...(fm.tags||[]), ...meta.tags])];
   fs.writeFileSync(filePath, serializeFrontmatter(fm) + body, 'utf-8');
 }
 
@@ -5312,6 +5452,7 @@ app.post('/api/note/reanalyze', auth, async (req, res) => {
 
   const freshRaw = fs.readFileSync(filePath, 'utf-8');
   await applyPerspectiveFilters(filePath, freshRaw);
+  noteCache.invalidate(filename);
   res.json({ ok: true, filename });
 });
 
@@ -5735,6 +5876,123 @@ app.post('/api/note/tags', auth, async (req, res) => {
 // ============================================================
 // Pi UI: Note Tags Save
 // ============================================================
+// Sub 3-3: GET /api/entities — return entity_map for autocomplete
+app.get('/api/entities', auth, (req, res) => {
+  const entityMap = getEntityMap();
+  if (!entityMap) return res.json({ persons: {}, places: {}, projects: {} });
+  res.json({
+    persons:  entityMap.persons  || {},
+    places:   entityMap.places   || {},
+    projects: entityMap.projects || {}
+  });
+});
+
+// Sub 3-4: POST /api/note/entities/save — edit entity in note frontmatter + entity_map
+const ENTITY_KEY_SAFE = /^[^\x00-\x1f\x7f<>{}[\]|\\^`"]{1,100}$/; // no prototype-pollution keys
+app.post('/api/note/entities/save', auth, (req, res) => {
+  const { filename, type, original, corrected } = req.body;
+  if (!filename || !type || !original || !corrected) return res.status(400).json({ error: 'filename, type, original, corrected required' });
+  if (!['person','place','project'].includes(type)) return res.status(400).json({ error: 'invalid type' });
+  // Security: reject keys that could cause prototype pollution
+  if (!ENTITY_KEY_SAFE.test(original) || !ENTITY_KEY_SAFE.test(corrected)) return res.status(400).json({ error: 'invalid entity name' });
+  const filePath = findNoteFile(filename);
+  if (!filePath) return res.status(404).json({ error: 'Note not found' });
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const { frontmatter: fm, body } = parseFrontmatter(raw);
+    const fmFields = type === 'person' ? ['participants', 'attendees'] : type === 'place' ? ['places'] : ['projects'];
+    for (const field of fmFields) {
+      if (Array.isArray(fm[field])) {
+        fm[field] = fm[field].map(v => {
+          const stripped = String(v).replace(/^\[\[|\]\]$/g, '');
+          return stripped === original ? `[[${corrected}]]` : v;
+        });
+      }
+    }
+    fs.writeFileSync(filePath, serializeFrontmatter(fm) + body, 'utf-8');
+    noteCache.invalidate(filename);
+    // Update entity_map aliases + persist
+    const entityMap = getEntityMap();
+    if (entityMap) {
+      const mapKey = type === 'person' ? 'persons' : type === 'place' ? 'places' : 'projects';
+      if (entityMap[mapKey] && Object.prototype.hasOwnProperty.call(entityMap[mapKey], original)) {
+        if (original === corrected) {
+          // No rename needed — skip entity_map mutation
+        } else if (Object.prototype.hasOwnProperty.call(entityMap[mapKey], corrected)) {
+          // Corrected key already exists — merge sources into existing entry
+          const src = entityMap[mapKey][original];
+          const dst = entityMap[mapKey][corrected];
+          dst.aliases = dst.aliases || {};
+          dst.aliases[original] = true;
+          for (const s of (src.sources || [])) {
+            if (!dst.sources.includes(s)) dst.sources.push(s);
+          }
+          delete entityMap[mapKey][original];
+        } else {
+          const entry = entityMap[mapKey][original];
+          entry.aliases = entry.aliases || {};
+          entry.aliases[original] = true;
+          entityMap[mapKey][corrected] = entry;
+          delete entityMap[mapKey][original];
+        }
+        const { saveEntityMapToDisk } = require('./entityIndexer');
+        if (typeof saveEntityMapToDisk === 'function') saveEntityMapToDisk();
+      }
+    }
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[entities/save]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Sub 3-5: POST /api/note/speakers/save — resolve speaker label to real name
+app.post('/api/note/speakers/save', auth, (req, res) => {
+  const { filename, originalSpeaker, resolvedName } = req.body;
+  if (!filename || !originalSpeaker || !resolvedName) return res.status(400).json({ error: 'filename, originalSpeaker, resolvedName required' });
+  if (!ENTITY_KEY_SAFE.test(String(resolvedName))) return res.status(400).json({ error: 'invalid resolvedName' });
+  const filePath = findNoteFile(filename);
+  if (!filePath) return res.status(404).json({ error: 'Note not found' });
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const { frontmatter: fm, body } = parseFrontmatter(raw);
+    // Update frontmatter speakers array
+    if (Array.isArray(fm.speakers)) {
+      fm.speakers = fm.speakers.map(s => String(s) === originalSpeaker ? resolvedName : s);
+    }
+    if (!Array.isArray(fm.participants)) fm.participants = [];
+    if (!fm.participants.some(p => String(p).replace(/^\[\[|\]\]$/g, '') === resolvedName)) {
+      fm.participants.push(`[[${resolvedName}]]`);
+    }
+    // Replace speaker label in body text
+    const updatedBody = body.replace(new RegExp(originalSpeaker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), resolvedName);
+    fs.writeFileSync(filePath, serializeFrontmatter(fm) + updatedBody, 'utf-8');
+    noteCache.invalidate(filename);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[speakers/save]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Sub 3-7: PUT /api/note/content — save edited body (frontmatter preserved)
+app.put('/api/note/content', auth, (req, res) => {
+  const { filename, body: newBody } = req.body;
+  if (!filename || newBody === undefined) return res.status(400).json({ error: 'filename and body required' });
+  const filePath = findNoteFile(filename);
+  if (!filePath) return res.status(404).json({ error: 'Note not found' });
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const { frontmatter: fm } = parseFrontmatter(raw);
+    fs.writeFileSync(filePath, serializeFrontmatter(fm) + newBody, 'utf-8');
+    noteCache.invalidate(filename);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[note/content PUT]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/note/tags/save', auth, (req, res) => {
   const { filename, tags } = req.body;
   if (!filename || !Array.isArray(tags)) return res.status(400).json({ error: 'filename and tags array required' });
@@ -5749,6 +6007,7 @@ app.post('/api/note/tags/save', auth, (req, res) => {
     frontmatter.user_tags = allTags.filter(t => !systemTags.has(t));
     fs.writeFileSync(filePath, serializeFrontmatter(frontmatter) + body, 'utf-8');
     invalidateFileCache();
+    noteCache.invalidate(filename);
     res.json({ success: true, tags: allTags });
   } catch (e) {
     console.error('[Tags Save] Error:', e.message);
@@ -5787,7 +6046,8 @@ app.get('/api/vault/browse', auth, (req, res) => {
   const offset = parseInt(req.query.offset) || 0;
   const limit = Math.min(parseInt(req.query.limit) || 30, 100);
   const filterType = req.query.type || '';
-  const filterTag = req.query.tag || '';
+  const filterTagRaw = req.query.tag;
+  const filterTags = Array.isArray(filterTagRaw) ? filterTagRaw : (filterTagRaw ? [filterTagRaw] : []);
 
   let allFiles = getAllMdFilesCached().slice().sort((a, b) => {
     const da = (path.basename(a).match(/^(\d{4}-\d{2}-\d{2})/) || ['', ''])[1];
@@ -5805,11 +6065,11 @@ app.get('/api/vault/browse', auth, (req, res) => {
   const results = [];
   let scanned = 0;
   for (const fp of allFiles) {
-    if (filterTag) {
+    if (filterTags.length > 0) {
       try {
         const raw = fs.readFileSync(fp, 'utf-8');
         const { frontmatter } = parseFrontmatter(raw);
-        if (!Array.isArray(frontmatter.tags) || !frontmatter.tags.includes(filterTag)) continue;
+        if (!Array.isArray(frontmatter.tags) || !filterTags.every(t => frontmatter.tags.includes(t))) continue;
       } catch (e) { continue; }
     }
     scanned++;
@@ -5875,6 +6135,7 @@ app.post('/api/vault/retag', auth, aiLimiter, async (req, res) => {
     }
   }
   invalidateFileCache();
+  noteCache.invalidateAll();
   res.json({ results });
 });
 

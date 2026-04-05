@@ -22,7 +22,7 @@ module.exports = defineConfig({
   projects: [
     {
       name: 'api-unit',
-      testMatch: /api-unit|vaultvoice|calendar|stage2-3/,
+      testMatch: /api-unit|vaultvoice|calendar|stage2-3|unit-stage2|api-stage2-3/,
       use: { browserName: 'chromium' },
     },
     {
@@ -34,7 +34,7 @@ module.exports = defineConfig({
     },
     {
       name: 'e2e-realenv',
-      testMatch: /e2e-realenv|e2e-ui/,
+      testMatch: /e2e-realenv|e2e-ui|e2e-stage2-3/,
       // SR D5 ACCEPT: 20건×8초(rate limit)+AI대기(5~10분) = 총 5~10분 필요 → 300s
       timeout: 300000,
       retries: 1,

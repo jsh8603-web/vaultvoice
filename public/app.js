@@ -56,6 +56,44 @@ function showToast(message, type) {
   setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 3200);
 }
 
+// E6: 한국어 에러 메시지 + 재시도 버튼
+var _errorMessages = {
+  401: '인증이 필요합니다. API 키를 확인하세요.',
+  403: '접근이 거부되었습니다.',
+  404: '요청한 리소스를 찾을 수 없습니다.',
+  413: '파일이 너무 큽니다.',
+  429: '요청이 너무 많습니다. 잠시 후 다시 시도하세요.',
+  500: '서버 오류가 발생했습니다. 잠시 후 재시도하세요.',
+  503: '서비스를 일시적으로 사용할 수 없습니다.',
+  offline: '네트워크 연결을 확인하세요.',
+  timeout: '요청 시간이 초과되었습니다.'
+};
+
+function getKoreanError(err, status) {
+  if (!navigator.onLine) return _errorMessages.offline;
+  if (status && _errorMessages[status]) return _errorMessages[status];
+  if (err && (err.message || '').includes('timeout')) return _errorMessages.timeout;
+  return err && err.message ? '오류: ' + err.message : '알 수 없는 오류가 발생했습니다.';
+}
+
+function showErrorWithRetry(msg, retryFn) {
+  var el = document.createElement('div');
+  el.className = 'vv-toast error';
+  el.style.maxWidth = '300px';
+  var txt = document.createElement('span');
+  txt.textContent = msg;
+  el.appendChild(txt);
+  if (retryFn) {
+    var btn = document.createElement('button');
+    btn.textContent = ' 재시도';
+    btn.style.cssText = 'margin-left:8px;background:rgba(255,255,255,.2);border:none;color:#fff;border-radius:4px;padding:2px 8px;cursor:pointer';
+    btn.onclick = function () { if (el.parentNode) el.parentNode.removeChild(el); retryFn(); };
+    el.appendChild(btn);
+  }
+  document.body.appendChild(el);
+  setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 6000);
+}
+
 function fmt(d) { var y = d.getFullYear(), m = d.getMonth() + 1, day = d.getDate(); return y + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day); }
 
 function fmtDisplay(d) {
@@ -83,6 +121,74 @@ function apiUpload(path, formData) {
     body: formData
   });
 }
+
+function apiUploadWithProgress(path, formData, onProgress) {
+  return new Promise(function (resolve, reject) {
+    var xhr = new XMLHttpRequest();
+    var prog = document.getElementById('upload-progress');
+    var bar  = document.getElementById('upload-progress-bar');
+    var lbl  = document.getElementById('upload-progress-label');
+    if (prog) prog.style.display = '';
+    xhr.upload.onprogress = function (e) {
+      if (!e.lengthComputable) return;
+      var pct = Math.round(e.loaded / e.total * 100);
+      if (bar) bar.style.width = pct + '%';
+      if (lbl) lbl.textContent = pct + '%';
+      if (onProgress) onProgress(pct);
+    };
+    xhr.onload = function () {
+      if (prog) prog.style.display = 'none';
+      if (bar) bar.style.width = '0%';
+      resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status,
+        json: function () { return Promise.resolve(JSON.parse(xhr.responseText)); } });
+    };
+    xhr.onerror = function () { if (prog) prog.style.display = 'none'; reject(new Error('Upload failed')); };
+    xhr.open('POST', '/api' + path);
+    xhr.setRequestHeader('Authorization', 'Bearer ' + API_KEY);
+    xhr.send(formData);
+  });
+}
+
+// ---- Offline Queue helpers ----
+function showOfflineBanner(msg) {
+  var el = document.getElementById('offline-banner');
+  if (!el) return;
+  el.textContent = msg || '오프라인 — 연결 복귀 시 자동 전송됩니다';
+  el.style.display = 'block';
+  setTimeout(function () { el.style.display = 'none'; }, 4000);
+}
+
+function updateOfflineBadge() {
+  if (!window.OfflineDB) return;
+  OfflineDB.queueCount().then(function (n) {
+    var badge = document.getElementById('offline-badge');
+    if (badge) { badge.textContent = n > 0 ? n : ''; badge.style.display = n > 0 ? 'inline' : 'none'; }
+  }).catch(function () {});
+}
+
+function processOfflineQueue() {
+  if (!window.OfflineDB || !navigator.onLine) return;
+  OfflineDB.getQueue().then(function (items) {
+    items.reduce(function (p, item) {
+      return p.then(function () {
+        var d = item.data;
+        var fd = new FormData();
+        Object.keys(d.fields || {}).forEach(function (k) { fd.append(k, d.fields[k]); });
+        if (d.fileBlob && d.fileName) fd.append('file', d.fileBlob, d.fileName);
+        return fetch('/api' + d.url, {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + API_KEY },
+          body: fd
+        }).then(function (r) {
+          if (r.ok) return OfflineDB.removeFromQueue(item.id);
+        }).catch(function () {});
+      });
+    }, Promise.resolve()).then(updateOfflineBadge);
+  }).catch(function () {});
+}
+
+window.addEventListener('online', processOfflineQueue);
+document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') processOfflineQueue(); });
 
 // ============================================================
 // Auth
@@ -278,6 +384,47 @@ function toggleRecording() {
   }
 }
 
+var _waveAnimId = null;
+
+function startWaveform(stream) {
+  var canvas = document.getElementById('rec-waveform');
+  var recUi = document.getElementById('rec-ui');
+  if (!canvas || !recUi) return;
+  recUi.style.display = '';
+  var ctx = canvas.getContext('2d');
+  var ac = new (window.AudioContext || window.webkitAudioContext)();
+  var src = ac.createMediaStreamSource(stream);
+  var analyser = ac.createAnalyser();
+  analyser.fftSize = 256;
+  src.connect(analyser);
+  var buf = new Uint8Array(analyser.frequencyBinCount);
+  function draw() {
+    _waveAnimId = requestAnimationFrame(draw);
+    analyser.getByteTimeDomainData(buf);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.beginPath();
+    ctx.strokeStyle = '#7c5cbf';
+    ctx.lineWidth = 2;
+    var sliceW = canvas.width / buf.length;
+    var x = 0;
+    for (var i = 0; i < buf.length; i++) {
+      var v = buf[i] / 128.0;
+      var y = (v * canvas.height) / 2;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      x += sliceW;
+    }
+    ctx.stroke();
+  }
+  draw();
+  return function () { if (_waveAnimId) cancelAnimationFrame(_waveAnimId); ac.close(); };
+}
+
+function stopWaveform() {
+  if (_waveAnimId) { cancelAnimationFrame(_waveAnimId); _waveAnimId = null; }
+  var recUi = document.getElementById('rec-ui');
+  if (recUi) recUi.style.display = 'none';
+}
+
 function startRecording() {
   navigator.mediaDevices.getUserMedia({ audio: true })
     .then(function (stream) {
@@ -290,12 +437,15 @@ function startRecording() {
       audioRecorder = new MediaRecorder(stream, opts);
       var chunks = [];
       isRecordingNow = true;
+      var stopWave = startWaveform(stream);
 
       audioRecorder.ondataavailable = function (e) {
         if (e.data.size > 0) chunks.push(e.data);
       };
 
       audioRecorder.onstop = function () {
+        if (stopWave) stopWave();
+        stopWaveform();
         stream.getTracks().forEach(function (t) { t.stop(); });
         isRecordingNow = false;
         clearInterval(audioRecordingTimer);
@@ -311,12 +461,14 @@ function startRecording() {
 
       audioRecorder.start(5000); // 5s timeslice for iOS
       audioRecordingStart = Date.now();
+      var timerEl = document.getElementById('rec-timer');
       audioRecordingTimer = setInterval(function () {
         var elapsed = Math.floor((Date.now() - audioRecordingStart) / 1000);
         var m = Math.floor(elapsed / 60);
         var s = elapsed % 60;
         var btn = document.getElementById('btnRecord');
         if (btn) btn.title = '녹음 중: ' + m + ':' + (s < 10 ? '0' : '') + s;
+        if (timerEl) timerEl.textContent = m + ':' + (s < 10 ? '0' : '') + s;
       }, 500);
     })
     .catch(function (e) { showToast('마이크 접근 실패: ' + e.message, 'error'); });
@@ -379,6 +531,8 @@ function procQueueRun() {
       next.status = 'done';
       if (navigator.vibrate) navigator.vibrate(50);
       feedDate = new Date();
+      // E10: subscribe to pipeline SSE for progress toasts
+      if (d.pipelineId) subscribeToProgress(d.pipelineId);
       // 음성/회의 전사 완료 후 일정 감지
       if (next.type === 'audio' && d.transcription) {
         detectCalendarEvent(d.transcription, new Date());
@@ -386,10 +540,12 @@ function procQueueRun() {
     } else {
       next.status = 'error';
       next.name += ' - ' + (d && d.error ? d.error : '오류');
+      showErrorWithRetry(getKoreanError(null, d && d.status), null);
     }
   }).catch(function (e) {
     next.status = 'error';
     next.name += ' - ' + e.message;
+    showErrorWithRetry(getKoreanError(e, null), null);
   }).then(function () {
     procRunning = false;
     procQueueRender();
@@ -403,6 +559,23 @@ function procQueueRun() {
     // Process next in queue
     procQueueRun();
   });
+}
+
+// E10: SSE pipeline progress subscription
+var _pipelineStageLabels = { meta: '제목/분류 생성 중', perspective: 'AI 관점 분석 중', all: '파이프라인 완료' };
+function subscribeToProgress(pipelineId) {
+  if (!window.EventSource) return;
+  var es = new EventSource('/api/pipeline/progress?id=' + encodeURIComponent(pipelineId) + '&key=' + encodeURIComponent(API_KEY));
+  es.onmessage = function (e) {
+    try {
+      var d = JSON.parse(e.data);
+      var label = _pipelineStageLabels[d.stage] || d.stage;
+      if (d.status === 'done') showToast(label, 'success');
+      if (d.stage === 'all') es.close();
+    } catch (ex) {}
+  };
+  es.onerror = function () { es.close(); };
+  setTimeout(function () { es.close(); }, 120000); // max 2min
 }
 
 function handleSave() {
@@ -428,7 +601,7 @@ function handleSave() {
     var blob = pendingAudioBlob; // capture ref
     queueItem = {
       type: 'audio', name: audioType === 'meeting' ? '회의 녹음' : '음성 메모',
-      sendFn: function () { return apiUpload('/process/audio', fd).then(function (r) { return r.json(); }); }
+      sendFn: function () { return apiUploadWithProgress('/process/audio', fd).then(function (r) { return r.json(); }); }
     };
   } else if (pendingImageFile) {
     var fd2 = new FormData();
@@ -437,7 +610,7 @@ function handleSave() {
     if (text) fd2.append('memo', text);
     queueItem = {
       type: 'image', name: pendingImageFile.file.name || '사진',
-      sendFn: function () { return apiUpload('/process/image', fd2).then(function (r) { return r.json(); }); }
+      sendFn: function () { return apiUploadWithProgress('/process/image', fd2).then(function (r) { return r.json(); }); }
     };
   } else {
     var detectedUrl = detectUrl();
@@ -565,6 +738,70 @@ function shiftFeedDate(n) {
   loadFeed();
 }
 
+// E3+E11: Mini calendar popup with note-dot indicators
+var _calDates = [];
+var _calViewYear = 0;
+var _calViewMonth = 0;
+
+function openMiniCalendar() {
+  var modal = document.getElementById('mini-cal-modal');
+  if (!modal) return;
+  _calViewYear  = feedDate.getFullYear();
+  _calViewMonth = feedDate.getMonth();
+  fetchCalDates(_calViewYear, _calViewMonth, function () { renderMiniCal(modal); });
+  modal.style.display = 'flex';
+}
+
+function fetchCalDates(y, m, cb) {
+  var ym = y + '-' + String(m + 1).padStart(2, '0');
+  api('/feed/month/' + ym).then(function (r) { return r.json(); }).then(function (d) {
+    _calDates = d.dates || [];
+    cb();
+  }).catch(function () { _calDates = []; cb(); });
+}
+
+function renderMiniCal(modal) {
+  var days = ['일', '월', '화', '수', '목', '금', '토'];
+  var first = new Date(_calViewYear, _calViewMonth, 1);
+  var lastDay = new Date(_calViewYear, _calViewMonth + 1, 0).getDate();
+  var startDow = first.getDay();
+  var header = '<div class="mcal-header">' +
+    '<button id="mcal-prev">&#9665;</button>' +
+    '<span>' + _calViewYear + '년 ' + (_calViewMonth + 1) + '월</span>' +
+    '<button id="mcal-next">&#9655;</button>' +
+    '</div>';
+  var grid = '<div class="mcal-grid">';
+  days.forEach(function (d) { grid += '<div class="mcal-dow">' + d + '</div>'; });
+  for (var i = 0; i < startDow; i++) grid += '<div></div>';
+  for (var d = 1; d <= lastDay; d++) {
+    var dateStr = _calViewYear + '-' + String(_calViewMonth + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+    var hasDot = _calDates.indexOf(dateStr) >= 0;
+    var isToday = dateStr === fmt(new Date());
+    var isCur  = dateStr === fmt(feedDate);
+    var cls = 'mcal-day' + (isCur ? ' mcal-active' : '') + (isToday ? ' mcal-today' : '');
+    grid += '<div class="' + cls + '" data-date="' + dateStr + '">' + d + (hasDot ? '<span class="mcal-dot"></span>' : '') + '</div>';
+  }
+  grid += '</div>';
+  modal.querySelector('.mcal-body').innerHTML = header + grid;
+  modal.querySelectorAll('.mcal-day').forEach(function (el) {
+    el.addEventListener('click', function () {
+      feedDate = new Date(this.getAttribute('data-date') + 'T12:00:00');
+      modal.style.display = 'none';
+      updateFeedDate(); loadFeed();
+    });
+  });
+  document.getElementById('mcal-prev').addEventListener('click', function (e) {
+    e.stopPropagation();
+    _calViewMonth--; if (_calViewMonth < 0) { _calViewMonth = 11; _calViewYear--; }
+    fetchCalDates(_calViewYear, _calViewMonth, function () { renderMiniCal(modal); });
+  });
+  document.getElementById('mcal-next').addEventListener('click', function (e) {
+    e.stopPropagation();
+    _calViewMonth++; if (_calViewMonth > 11) { _calViewMonth = 0; _calViewYear++; }
+    fetchCalDates(_calViewYear, _calViewMonth, function () { renderMiniCal(modal); });
+  });
+}
+
 function loadFeed() {
   updateFeedDate();
   var el = document.getElementById('feedCards');
@@ -594,6 +831,15 @@ function loadFeed() {
           if (e.target.closest('a')) return;
           // Check if tag editor is interacted with
           if (e.target.closest('.card-tag-editor')) return;
+          // Sub 3-3: entity chip clicked → inline editor
+          var entityChip = e.target.closest('.entity-chip');
+          if (entityChip && !e.target.closest('.card-entity-editor')) {
+            e.stopPropagation();
+            handleEntityChipClick(entityChip, card);
+            return;
+          }
+          // Ignore clicks inside the entity editor itself (let it handle internally)
+          if (e.target.closest('.card-entity-editor')) { e.stopPropagation(); return; }
           // Check if tag area was clicked
           if (e.target.closest('.card-tags')) {
             e.stopPropagation();
@@ -649,14 +895,49 @@ function loadFeed() {
   loadTodosForFeed(todosPromise);
 }
 
-function renderFeedCards(notes) {
+// Sub 3-1/3-2: strip [[wiki]] links for display
+function stripWikiLinks(arr) {
+  return (arr || []).map(function (s) { return String(s).replace(/^\[\[|\]\]$/g, ''); });
+}
+
+function renderEntityChips(fm, filename) {
+  var persons = stripWikiLinks(fm.participants || []);
+  var places = stripWikiLinks(fm.places || []);
+  var projects = stripWikiLinks(fm.projects || []);
+  var speakers = fm.speakers || [];
+  var chips = '';
+  persons.forEach(function (p) {
+    chips += '<span class="entity-chip chip-person" data-type="person" data-name="' + esc(p) + '" data-file="' + esc(filename) + '">👤 ' + esc(p) + '</span>';
+  });
+  places.forEach(function (p) {
+    chips += '<span class="entity-chip chip-place" data-type="place" data-name="' + esc(p) + '" data-file="' + esc(filename) + '">📍 ' + esc(p) + '</span>';
+  });
+  projects.forEach(function (p) {
+    chips += '<span class="entity-chip chip-project" data-type="project" data-name="' + esc(p) + '" data-file="' + esc(filename) + '">📂 ' + esc(p) + '</span>';
+  });
+  // Sub 3-2: speaker badges (voice cards)
+  speakers.forEach(function (s) {
+    chips += '<span class="entity-chip chip-speaker" data-type="speaker" data-name="' + esc(String(s)) + '" data-file="' + esc(filename) + '">🎤 ' + esc(String(s)) + '</span>';
+  });
+  return chips ? '<div class="card-entity-chips">' + chips + '</div>' : '';
+}
+
+function truncateToSentence(text, max) {
+  if (text.length <= max) return text;
+  var extended = text.substring(0, max);
+  var last = extended.search(/[.!?。][^.!?。]*$/);
+  if (last > 0) extended = extended.substring(0, last + 1);
+  return extended + (extended.length < text.length ? '...' : '');
+}
+
+function renderFeedCards(notes, query) {
   return notes.map(function (note) {
     var fm = note.frontmatter || {};
     var cardType = fm['유형'] || 'memo';
     var time = fm['시간'] || '';
     var tags = fm.tags || [];
     var body = (note.body || '').replace(/^#{1,3}\s+.+\n*/gm, '').trim();
-    var preview = body.length > 300 ? body.substring(0, 300) + '...' : body;
+    var preview = truncateToSentence(body, 400);
     var tagHtml = tags.filter(function (t) { return t !== 'vaultvoice'; }).map(function (t) {
       return '<span class="card-tag">#' + esc(t) + '</span>';
     }).join('');
@@ -665,15 +946,42 @@ function renderFeedCards(notes) {
     if (!title) { title = (note.filename || '').replace(/\.md$/, ''); }
     var fdMatch = (note.filename || '').match(/^(\d{4}-\d{2}-\d{2})/);
     var feedDate2 = fdMatch ? fdMatch[1] : '';
+
+    // E1: image thumbnail
+    var thumbnailHtml = '';
+    if (cardType === 'image' && fm.original_image) {
+      thumbnailHtml = '<div class="card-thumbnail"><img src="' + esc(fm.original_image) + '" alt="thumbnail" style="max-width:100%;max-height:120px;border-radius:6px;margin-bottom:6px"></div>';
+    }
+
+    // E9: search query highlight
+    var previewHtml;
+    var activeQuery = query || note._query || '';
+    if (activeQuery) {
+      var safeQ = activeQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      previewHtml = renderMd(preview).replace(new RegExp('(' + safeQ + ')', 'gi'), '<mark>$1</mark>');
+    } else {
+      previewHtml = renderMd(preview);
+    }
+
+    // E12: URL source link button
+    var urlLinkHtml = '';
+    if (cardType === 'url' && fm.source_url) {
+      urlLinkHtml = '<div class="card-url-link"><a href="' + esc(fm.source_url) + '" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent)">원본 보기 →</a></div>';
+    }
+
     return '<div class="feed-card card-' + cardType + '" data-filename="' + filename + '">' +
       '<div class="card-header">' +
       '<span class="card-icon">' + typeIcon(cardType) + '</span>' +
       '<span class="card-type-label">' + typeLabel(cardType) + '</span>' +
       '<span class="card-time">' + esc(feedDate2 || time) + '</span>' +
       '</div>' +
+      thumbnailHtml +
       '<div class="card-title">\u300C' + esc(title) + '\u300D</div>' +
-      '<div class="card-body">' + renderMd(preview) + '</div>' +
+      '<div class="card-body">' + previewHtml + '</div>' +
+      urlLinkHtml +
       (tagHtml ? '<div class="card-tags">' + tagHtml + '</div>' : '') +
+      renderEntityChips(fm, note.filename || '') +
+      '<div class="card-entity-editor" style="display:none"></div>' +
       renderCardActions(filename) +
       '<div class="card-related"></div>' +
       '</div>';
@@ -837,6 +1145,95 @@ function handleCardDelete(filename) {
   api('/note/delete', { method: 'POST', body: JSON.stringify({ filename: filename }) })
     .then(function (r) { if (r.ok) { showToast('노트가 삭제되었습니다', 'success'); loadFeed(); } })
     .catch(function () { showToast('삭제 실패', 'error'); });
+}
+
+// Sub 3-7/3-8: Save note body via PUT /api/note/content
+function saveNoteContent(filename, body, silent) {
+  api('/note/content', { method: 'PUT', body: JSON.stringify({ filename: filename, body: body }) })
+    .then(function (r) { return r.json(); })
+    .then(function () { if (!silent) showToast('저장 완료', 'success'); })
+    .catch(function () { if (!silent) showToast('저장 실패', 'error'); });
+}
+
+// Sub 3-3: Entity chip inline editor
+var _entityMapCache = null;
+function fetchEntityMap(cb) {
+  if (_entityMapCache) { cb(_entityMapCache); return; }
+  api('/entities')
+    .then(function (r) { return r.json(); })
+    .then(function (d) { _entityMapCache = d; cb(d); })
+    .catch(function () { cb({}); });
+}
+
+function handleEntityChipClick(chipEl, cardEl) {
+  var editorEl = cardEl.querySelector('.card-entity-editor');
+  var type = chipEl.getAttribute('data-type');
+  var name = chipEl.getAttribute('data-name');
+  var filename = chipEl.getAttribute('data-file');
+
+  // Toggle: close if same chip already open
+  if (editorEl.style.display !== 'none' && editorEl.getAttribute('data-editing') === name) {
+    editorEl.style.display = 'none';
+    return;
+  }
+
+  editorEl.setAttribute('data-editing', name);
+  editorEl.style.display = 'block';
+  editorEl.innerHTML =
+    '<div class="entity-editor-inner">' +
+    '<span class="entity-editor-label">' + (type === 'speaker' ? '🎤 화자 이름' : (type === 'person' ? '👤' : type === 'place' ? '📍' : '📂')) + ' </span>' +
+    '<input class="entity-editor-input" value="' + esc(name) + '" placeholder="이름 입력">' +
+    '<div class="entity-autocomplete"></div>' +
+    '<button class="btn-sm entity-editor-save">저장</button>' +
+    '<button class="btn-sm entity-editor-cancel" style="margin-left:4px">취소</button>' +
+    '</div>';
+
+  var input = editorEl.querySelector('.entity-editor-input');
+  var acDiv = editorEl.querySelector('.entity-autocomplete');
+  input.focus();
+
+  // Autocomplete on input
+  fetchEntityMap(function (entityMap) {
+    var candidates = [];
+    if (type === 'person' || type === 'speaker') candidates = Object.keys(entityMap.persons || {});
+    else if (type === 'place') candidates = Object.keys(entityMap.places || {});
+    else if (type === 'project') candidates = Object.keys(entityMap.projects || {});
+
+    input.oninput = function () {
+      var q = input.value.toLowerCase();
+      var matches = q.length < 1 ? [] : candidates.filter(function (c) { return c.toLowerCase().includes(q); }).slice(0, 5);
+      acDiv.innerHTML = matches.map(function (m) {
+        return '<span class="ac-item" data-val="' + esc(m) + '">' + esc(m) + '</span>';
+      }).join('');
+      acDiv.querySelectorAll('.ac-item').forEach(function (item) {
+        item.onclick = function () { input.value = item.getAttribute('data-val'); acDiv.innerHTML = ''; };
+      });
+    };
+  });
+
+  editorEl.querySelector('.entity-editor-cancel').onclick = function () {
+    editorEl.style.display = 'none';
+  };
+
+  editorEl.querySelector('.entity-editor-save').onclick = function () {
+    var newName = input.value.trim();
+    if (!newName) return;
+    var endpoint = type === 'speaker' ? '/note/speakers/save' : '/note/entities/save';
+    var body = type === 'speaker'
+      ? { filename: filename, originalSpeaker: name, resolvedName: newName }
+      : { filename: filename, type: type, original: name, corrected: newName };
+    api(endpoint, { method: 'POST', body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); })
+      .then(function () {
+        showToast('저장 완료', 'success');
+        editorEl.style.display = 'none';
+        _entityMapCache = null; // invalidate
+        // Update chip text in place
+        chipEl.textContent = (type === 'speaker' ? '🎤 ' : type === 'person' ? '👤 ' : type === 'place' ? '📍 ' : '📂 ') + newName;
+        chipEl.setAttribute('data-name', newName);
+      })
+      .catch(function () { showToast('저장 실패', 'error'); });
+  };
 }
 
 function handleCardComment(filename, cardEl) {
@@ -1138,6 +1535,82 @@ function openNoteDetail(filename, noteList, currentIndex) {
     tagsEl.innerHTML = '';
     bodyEl.innerHTML = '<div class="empty">로딩 중...</div>';
   }
+  // Sub 3-6: ensure edit controls exist in note-detail-card
+  if (!card.querySelector('.note-edit-bar')) {
+    var editBar = document.createElement('div');
+    editBar.className = 'note-edit-bar';
+    editBar.style.cssText = 'display:flex;gap:6px;padding:8px 16px 0;';
+    editBar.innerHTML =
+      '<button class="btn-sm note-edit-btn" id="note-btn-edit">편집</button>' +
+      '<button class="btn-sm note-edit-btn" id="note-btn-preview" style="display:none">미리보기</button>' +
+      '<button class="btn-sm note-edit-btn" id="note-btn-save" style="display:none">저장</button>';
+    var bodyRef = document.getElementById('note-detail-body');
+    card.insertBefore(editBar, bodyRef);
+
+    // Sub 3-9: edit/preview toggle + Sub 3-8: debounce autosave
+    var _editDebounceTimer = null;
+    var _editFilename = null;
+
+    function enterEditMode(body) {
+      bodyEl.style.display = 'none';
+      var ta = document.getElementById('note-edit-textarea');
+      if (!ta) {
+        ta = document.createElement('textarea');
+        ta.id = 'note-edit-textarea';
+        ta.style.cssText = 'width:100%;min-height:200px;background:transparent;color:inherit;border:1px solid var(--border,#333);border-radius:8px;padding:10px;font-size:14px;line-height:1.6;resize:none;box-sizing:border-box;';
+        ta.oninput = function () {
+          // auto-resize
+          ta.style.height = 'auto';
+          ta.style.height = ta.scrollHeight + 'px';
+          // debounce autosave — Sub 3-8
+          clearTimeout(_editDebounceTimer);
+          _editDebounceTimer = setTimeout(function () { saveNoteContent(_editFilename, ta.value, true); }, 1000);
+        };
+        bodyRef.parentNode.insertBefore(ta, bodyRef);
+      }
+      ta.value = body;
+      ta.style.display = 'block';
+      setTimeout(function () { ta.style.height = ta.scrollHeight + 'px'; }, 0);
+      document.getElementById('note-btn-edit').style.display = 'none';
+      document.getElementById('note-btn-preview').style.display = '';
+      document.getElementById('note-btn-save').style.display = '';
+    }
+
+    document.getElementById('note-btn-edit').onclick = function () {
+      var ta = document.getElementById('note-edit-textarea');
+      if (ta && ta.style.display !== 'none') return; // already editing
+      // fetch current body
+      api('/note/' + encodeURIComponent(_editFilename || filename))
+        .then(function (r) { return r.json(); })
+        .then(function (d) { enterEditMode(d.body || ''); });
+    };
+
+    document.getElementById('note-btn-preview').onclick = function () {
+      var ta = document.getElementById('note-edit-textarea');
+      if (!ta) return;
+      // Sub 3-9: toggle to preview
+      if (ta.style.display !== 'none') {
+        bodyEl.innerHTML = (typeof marked !== 'undefined') ? marked.parse(ta.value) : renderMd(ta.value);
+        bodyEl.style.display = '';
+        ta.style.display = 'none';
+        document.getElementById('note-btn-preview').textContent = '편집';
+        document.getElementById('note-btn-edit').style.display = 'none';
+      } else {
+        bodyEl.style.display = 'none';
+        ta.style.display = 'block';
+        document.getElementById('note-btn-preview').textContent = '미리보기';
+        document.getElementById('note-btn-edit').style.display = 'none';
+      }
+    };
+
+    document.getElementById('note-btn-save').onclick = function () {
+      var ta = document.getElementById('note-edit-textarea');
+      if (!ta) return;
+      clearTimeout(_editDebounceTimer);
+      saveNoteContent(_editFilename || filename, ta.value, false);
+    };
+  }
+
   // Always fetch full note (cached body may be truncated)
   api('/note/' + encodeURIComponent(filename))
     .then(function (r) { return r.json(); })
@@ -1146,12 +1619,81 @@ function openNoteDetail(filename, noteList, currentIndex) {
       typeEl.innerHTML = typeIcon(fm['유형'] || 'memo');
       timeEl.textContent = fm['시간'] || '';
       bodyEl.innerHTML = renderMd(d.body || '');
+      // Sub 3-6: reset edit mode on note change
+      var ta = document.getElementById('note-edit-textarea');
+      if (ta) { ta.style.display = 'none'; bodyEl.style.display = ''; }
+      var editBtn = document.getElementById('note-btn-edit');
+      var previewBtn = document.getElementById('note-btn-preview');
+      var saveBtn = document.getElementById('note-btn-save');
+      if (editBtn) editBtn.style.display = '';
+      if (previewBtn) { previewBtn.style.display = 'none'; previewBtn.textContent = '미리보기'; }
+      if (saveBtn) saveBtn.style.display = 'none';
+      // store filename for edit actions
+      var bar = card.querySelector('.note-edit-bar');
+      if (bar) bar._filename = filename;
       var tags = (fm.tags || []).filter(function (t) { return t !== 'vaultvoice'; });
       tagsEl.innerHTML = tags.map(function (t) {
         return '<span class="card-tag">#' + esc(t) + '</span>';
       }).join('');
     })
     .catch(function () { if (!cached) bodyEl.innerHTML = '<div class="empty">노트를 불러올 수 없습니다</div>'; });
+
+  // track current filename for edit actions
+  var bar = card.querySelector('.note-edit-bar');
+  if (bar) { bar._filename = filename; }
+  // Use closure variable in event handlers
+  var saveFilename = filename;
+  // patch save/edit onclick to use current filename
+  var editBtn2 = document.getElementById('note-btn-edit');
+  if (editBtn2) {
+    editBtn2.onclick = function () {
+      var ta = document.getElementById('note-edit-textarea');
+      if (ta && ta.style.display !== 'none') return;
+      api('/note/' + encodeURIComponent(saveFilename))
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          bodyEl.style.display = 'none';
+          var ta2 = document.getElementById('note-edit-textarea');
+          if (!ta2) {
+            ta2 = document.createElement('textarea');
+            ta2.id = 'note-edit-textarea';
+            ta2.style.cssText = 'width:100%;min-height:200px;background:transparent;color:inherit;border:1px solid var(--border,#333);border-radius:8px;padding:10px;font-size:14px;line-height:1.6;resize:none;box-sizing:border-box;';
+            var br2 = document.getElementById('note-detail-body');
+            br2.parentNode.insertBefore(ta2, br2);
+          }
+          ta2.value = d.body || '';
+          ta2.style.display = 'block';
+          ta2.style.height = 'auto';
+          ta2.style.height = ta2.scrollHeight + 'px';
+          var _debounce2 = null;
+          ta2.oninput = function () {
+            ta2.style.height = 'auto';
+            ta2.style.height = ta2.scrollHeight + 'px';
+            clearTimeout(_debounce2);
+            _debounce2 = setTimeout(function () { saveNoteContent(saveFilename, ta2.value, true); }, 1000);
+          };
+          document.getElementById('note-btn-edit').style.display = 'none';
+          document.getElementById('note-btn-preview').style.display = '';
+          document.getElementById('note-btn-save').style.display = '';
+          document.getElementById('note-btn-preview').onclick = function () {
+            if (ta2.style.display !== 'none') {
+              bodyEl.innerHTML = (typeof marked !== 'undefined') ? marked.parse(ta2.value) : renderMd(ta2.value);
+              bodyEl.style.display = '';
+              ta2.style.display = 'none';
+              this.textContent = '편집';
+            } else {
+              bodyEl.style.display = 'none';
+              ta2.style.display = 'block';
+              this.textContent = '미리보기';
+            }
+          };
+          document.getElementById('note-btn-save').onclick = function () {
+            clearTimeout(_debounce2);
+            saveNoteContent(saveFilename, ta2.value, false);
+          };
+        });
+    };
+  }
 
   // Swipe gesture setup
   setupNoteSwipe(card, overlay);
@@ -2304,7 +2846,7 @@ document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('feedPrev').addEventListener('click', function () { shiftFeedDate(-1); });
   document.getElementById('feedNext').addEventListener('click', function () { shiftFeedDate(1); });
   document.getElementById('feedDate').addEventListener('click', function () {
-    feedDate = new Date(); updateFeedDate(); loadFeed();
+    openMiniCalendar();
   });
 
   // ---- Search tab ----
@@ -2410,7 +2952,7 @@ function setupPushNotification() {
   var statusEl = document.getElementById('push-status');
   btn.disabled = true;
   statusEl.textContent = '구독 중...';
-  apiFetch('/api/push/vapid-public-key').then(function (d) {
+  api('/push/vapid-public-key').then(function (r) { return r.json(); }).then(function (d) {
     return navigator.serviceWorker.ready.then(function (reg) {
       return reg.pushManager.subscribe({
         userVisibleOnly: true,
@@ -2418,7 +2960,7 @@ function setupPushNotification() {
       });
     });
   }).then(function (sub) {
-    return apiFetch('/api/push/subscribe', { method: 'POST', body: JSON.stringify(sub) });
+    return api('/push/subscribe', { method: 'POST', body: JSON.stringify(sub) });
   }).then(function () {
     statusEl.textContent = '구독 중';
     btn.textContent = '구독 해제';
@@ -2439,7 +2981,7 @@ function teardownPushNotification() {
     return reg.pushManager.getSubscription();
   }).then(function (sub) {
     if (!sub) return;
-    return apiFetch('/api/push/unsubscribe', {
+    return api('/push/unsubscribe', {
       method: 'DELETE',
       body: JSON.stringify({ endpoint: sub.endpoint })
     }).then(function () { return sub.unsubscribe(); });
@@ -2475,6 +3017,9 @@ if ('serviceWorker' in navigator) {
       }
     });
   }).catch(function () {});
+  navigator.serviceWorker.addEventListener('message', function (e) {
+    if (e.data && e.data.type === 'PROCESS_QUEUE') processOfflineQueue();
+  });
 }
 
 // ============================================================
@@ -2484,7 +3029,7 @@ var _vaultOffset = 0;
 var _vaultHasMore = false;
 var _vaultStatsLoaded = false;
 var _vaultFilterType = '';
-var _vaultFilterTag = '';
+var _vaultFilterTags = [];
 
 function loadVaultBrowser() {
   if (!_vaultStatsLoaded) {
@@ -2579,9 +3124,21 @@ function loadVaultStats() {
         }
         tagChips.querySelectorAll('.chip:not(.chip-more)').forEach(function (chip) {
           chip.onclick = function () {
-            tagChips.querySelectorAll('.chip').forEach(function (c) { c.classList.remove('active'); });
-            chip.classList.add('active');
-            _vaultFilterTag = chip.getAttribute('data-tag');
+            var tag = chip.getAttribute('data-tag');
+            if (!tag) {
+              // "전체" chip — clear all
+              _vaultFilterTags = [];
+              tagChips.querySelectorAll('.chip').forEach(function (c) { c.classList.remove('active'); });
+              chip.classList.add('active');
+            } else {
+              tagChips.querySelectorAll('.chip[data-type=""]').forEach(function (c) { c.classList.remove('active'); });
+              var idx = _vaultFilterTags.indexOf(tag);
+              if (idx >= 0) { _vaultFilterTags.splice(idx, 1); chip.classList.remove('active'); }
+              else { _vaultFilterTags.push(tag); chip.classList.add('active'); }
+              if (_vaultFilterTags.length === 0) {
+                tagChips.querySelectorAll('.chip[data-type=""]').forEach(function (c) { c.classList.add('active'); });
+              }
+            }
             _vaultOffset = 0;
             loadVaultList(false);
           };
@@ -2595,7 +3152,6 @@ function loadVaultList(append) {
   var listEl = document.getElementById('vault-list');
   var loadMore = document.getElementById('vault-load-more');
   var filterType = _vaultFilterType || '';
-  var filterTag = _vaultFilterTag || '';
 
   if (!append) {
     listEl.innerHTML = '<div class="empty" style="padding:16px">로딩 중...</div>';
@@ -2603,7 +3159,7 @@ function loadVaultList(append) {
 
   var params = new URLSearchParams({ offset: _vaultOffset, limit: 30 });
   if (filterType) params.append('type', filterType);
-  if (filterTag) params.append('tag', filterTag);
+  _vaultFilterTags.forEach(function (t) { params.append('tag', t); });
 
   api('/vault/browse?' + params.toString())
     .then(function (r) { return r.json(); })

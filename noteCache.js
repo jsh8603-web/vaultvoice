@@ -11,7 +11,8 @@ class NoteCache {
 
   getNotesForDate(date) {
     const entry = this._byDate.get(date);
-    if (!entry || Date.now() - entry.ts > TTL) return null;
+    if (!entry) return null;
+    if (Date.now() - entry.ts > TTL) { this._byDate.delete(date); return null; }
     return entry.data;
   }
 

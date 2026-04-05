@@ -1,6 +1,6 @@
 # VaultVoice v3 — AI 노트 허브 아키텍처
 
-> **최종 갱신**: 2026-04-01 (피드 리디자인 + Jarvis 확장 + Gemini 4-Tier 구현 완료)
+> **최종 갱신**: 2026-04-04 (인프라 이력 추가 + 통합 계획 수립)
 
 ## 핵심 철학
 > **어떤 asset이든 텍스트와 쌍이 되어(변환) 저장되어야 한다.**
@@ -8,15 +8,78 @@
 
 ---
 
+## 인프라 이력
+
+### 구 아키텍처 (~ 2026-04-04, Pi 기반)
+
+```
+iPhone / 브라우저
+    ↓ HTTPS
+jsh-valutvoice.duckdns.org (DuckDNS → 125.248.17.75 ← 가정용 공인 IP)
+    ↓ 포트 포워딩 (공유기)
+Raspberry Pi (192.168.219.125)
+└── vaultvoice (Node.js, /home/pi/vaultvoice/) — 포트 직접 서빙
+    └── Obsidian Vault (/home/pi/gdrive/) — Google Drive Mount
+```
+
+- **DuckDNS**: `jsh-valutvoice.duckdns.org` → 가정용 공인 IP `125.248.17.75`
+- **Pi 앱 경로**: `/home/pi/vaultvoice/` (git 비관리, 독립 버전)
+- **Pi 버전 특징**: 탭 레이블 `브라우저`, SVG 카드 액션 5개 (요약/코멘트/태그/Jarvis/삭제)
+- **전환 이유**: Pi가 꺼지면 외부 접근 불가 → GCP 고정 IP 기반 24시간 서버로 이전
+
+### 현재 아키텍처 (2026-04-04~, GCP 기반)
+
+```
+iPhone / 브라우저
+    ↓ HTTPS
+jsh-valutvoice.duckdns.org (DuckDNS → 35.233.232.24)
+    ↓
+GCP VM (e2-micro, asia-northeast3, 고정 IP: 35.233.232.24)
+├── Caddy (systemd) — 포트 80/443, 자동 SSL (Let's Encrypt http-01)
+│   └── reverse_proxy localhost:3939
+├── PM2 — server.js (vaultvoice 프로세스)
+└── gcsfuse — /home/jsh86/vault/ (Google Cloud Storage 마운트)
+```
+
+- **GCP VM**: `jsh86@35.233.232.24`, SSH 키: `~/.ssh/google_compute_engine`
+- **Caddyfile**: `/etc/caddy/Caddyfile`
+- **볼트**: `/home/jsh86/vault/` (gcsfuse 마운트)
+- **DuckDNS 주의**: GCP cron이 주기적으로 `35.233.232.24`로 덮어씀 (가정 IP로 변경 시 자동 복구됨)
+
+### 참조 UI 버전 (Pi 앱 — 통합 목표 기준)
+
+Pi의 `/home/pi/vaultvoice/public/app.js` (2551줄)가 목표 UI 기준:
+
+| 항목 | Pi 버전 (목표) | git HEAD (현재) |
+|------|---------------|-----------------|
+| Vault 탭 레이블 | `브라우저` | `관리` |
+| 카드 액션 버튼 수 | 5개 (SVG 아이콘) | 4개 (이모지) |
+| 태그 편집 버튼 | ✅ (`tags` 액션) | ❌ 없음 |
+| `handleCardTags()` | ✅ (Pi line 844) | ❌ 없음 |
+| `card-tag-editor` DOM | ✅ (Pi line 726) | ❌ 없음 |
+| 카드 SVG 스타일 | `svgAttr` 패턴 | 이모지 텍스트 |
+
+SVG 변수 (Pi 참조):
+```javascript
+const svgAttr = 'xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
+// svgSummarize — <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+// svgComment   — <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+// svgTag       — <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/> + <line x1="7" y1="7" x2="7.01" y2="7"/>
+// svgJarvis    — <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1..."/> + 눈 circle 2개
+// svgDelete    — <path d="M3 6h18"/> + <path d="M8 6V4h8v2"/> + <path d="M19 6v14a2 2 0 0 1-2 2H7..."/>
+```
+
+---
+
 ## 시스템 개요
 
 | 구성 | 기술 |
 |------|------|
-| **Backend** | Node.js + Express (`server.js` 단일 파일, ~3600줄) |
+| **Backend** | Node.js + Express (`server.js` 단일 파일, ~4717줄) |
 | **Frontend** | Vanilla JS SPA (`public/app.js` + `app.css` + `index.html`) |
 | **AI** | Google Gemini API (4-Tier) + OpenAI Whisper (폴백) |
 | **Storage** | Obsidian Vault 파일시스템 (`99_vaultvoice/`) |
-| **배포** | GCP VM, PM2 프로세스 관리, PWA |
+| **배포** | GCP VM (PM2) + Caddy (SSL) + gcsfuse (Vault) |
 | **인증** | Bearer Token (`API_KEY` 환경변수) |
 
 ---

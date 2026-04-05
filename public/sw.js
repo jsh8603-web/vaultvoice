@@ -1,10 +1,12 @@
 // VaultVoice Service Worker v3
-const CACHE_NAME = 'vaultvoice-v3.1';
+const CACHE_VERSION = 'v3.2';
+const CACHE_NAME = 'vaultvoice-' + CACHE_VERSION;
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/app.css',
   '/app.js',
+  '/offline-db.js',
   '/manifest.json',
   '/icons/icon-192.png',
   '/icons/icon-512.png'
@@ -20,7 +22,7 @@ self.addEventListener('install', function (e) {
   self.skipWaiting();
 });
 
-// Activate: clean old caches
+// Activate: delete ALL old caches whose name differs from CACHE_NAME
 self.addEventListener('activate', function (e) {
   e.waitUntil(
     caches.keys().then(function (keys) {
@@ -33,7 +35,7 @@ self.addEventListener('activate', function (e) {
   self.clients.claim();
 });
 
-// Push notification handler (SR #5: iOS — title+body+icon only)
+// Push notification handler (iOS — title+body+icon only)
 self.addEventListener('push', function (e) {
   var data = {};
   try { data = e.data ? e.data.json() : {}; } catch (err) {}
@@ -43,6 +45,17 @@ self.addEventListener('push', function (e) {
       icon: '/icons/icon-192.png'
     })
   );
+});
+
+// Background Sync: replay offline queue
+self.addEventListener('sync', function (e) {
+  if (e.tag === 'sync-vaultvoice-queue') {
+    e.waitUntil(
+      self.clients.matchAll().then(function (clients) {
+        clients.forEach(function (c) { c.postMessage({ type: 'PROCESS_QUEUE' }); });
+      })
+    );
+  }
 });
 
 self.addEventListener('notificationclick', function (e) {
@@ -61,36 +74,39 @@ self.addEventListener('notificationclick', function (e) {
 self.addEventListener('fetch', function (e) {
   var url = new URL(e.request.url);
 
-  // API calls: network-first, offline fallback to 503
+  // API calls: network-first, cache fallback for GET, 503 for others
   if (url.pathname.startsWith('/api')) {
-    // iOS Safari bug: POST body is lost when intercepted by Service Worker
-    // Only intercept GET requests; let POST/PUT/DELETE pass through natively
-    if (e.request.method !== 'GET') {
-      return;
-    }
+    if (e.request.method !== 'GET') return; // let POST/PUT/DELETE pass natively (iOS body bug)
     e.respondWith(
-      fetch(e.request).catch(function () {
-        return new Response(
-          JSON.stringify({ error: 'Offline — 네트워크 연결을 확인하세요' }),
-          { status: 503, headers: { 'Content-Type': 'application/json' } }
-        );
+      fetch(e.request).then(function (response) {
+        // Cache successful GET API responses for offline fallback
+        if (response.ok) {
+          var clone = response.clone();
+          caches.open(CACHE_NAME).then(function (cache) { cache.put(e.request, clone); });
+        }
+        return response;
+      }).catch(function () {
+        return caches.match(e.request).then(function (cached) {
+          return cached || new Response(
+            JSON.stringify({ error: 'Offline — 네트워크 연결을 확인하세요' }),
+            { status: 503, headers: { 'Content-Type': 'application/json' } }
+          );
+        });
       })
     );
     return;
   }
 
-  // Static assets: cache-first, background refresh
+  // Static assets: pure cache-first (no background network on cache hit)
   e.respondWith(
     caches.match(e.request).then(function (cached) {
-      var fetchPromise = fetch(e.request).then(function (response) {
+      if (cached) return cached; // cache hit → skip network
+      return fetch(e.request).then(function (response) {
         if (response.ok && e.request.method === 'GET' && url.origin === self.location.origin) {
-          caches.open(CACHE_NAME).then(function (cache) {
-            cache.put(e.request, response.clone());
-          });
+          caches.open(CACHE_NAME).then(function (cache) { cache.put(e.request, response.clone()); });
         }
         return response;
       });
-      return cached || fetchPromise;
     })
   );
 });

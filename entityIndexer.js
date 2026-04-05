@@ -123,6 +123,68 @@ async function callGeminiNer(content) {
 let _Hangul;
 try { _Hangul = require('hangul-js'); } catch (e) {}
 
+// Sub 1-5/1-6: Load name-rules for phonetic weights + surname validation
+let _nameRules = null;
+let _phoneticCostMap = null; // MUST FIX: module-level cache (not per-call)
+function getNameRules() {
+  if (_nameRules) return _nameRules;
+  try {
+    const rulesPath = path.join(__dirname, 'name-rules.json');
+    _nameRules = JSON.parse(fs.readFileSync(rulesPath, 'utf-8'));
+  } catch (e) {
+    _nameRules = { surnames: [], phonetic_pairs: [], common_syllables: [] };
+  }
+  return _nameRules;
+}
+
+// SR Directive 1: Articulation-position-based cost matrix (replaces flat cost=0.3)
+// Costs represent phonetic similarity: lower = more confusable by STT
+// Grouped by articulation position / manner
+const ARTICULATION_COST_PAIRS = [
+  // Aspirated/tense/lax triples — most common STT confusion (cost 0.2)
+  ['ㄱ','ㅋ',0.2], ['ㄱ','ㄲ',0.2], ['ㅋ','ㄲ',0.2],
+  ['ㄷ','ㅌ',0.2], ['ㄷ','ㄸ',0.2], ['ㅌ','ㄸ',0.2],
+  ['ㅂ','ㅍ',0.2], ['ㅂ','ㅃ',0.2], ['ㅍ','ㅃ',0.2],
+  ['ㅈ','ㅊ',0.2], ['ㅈ','ㅉ',0.2], ['ㅊ','ㅉ',0.2],
+  ['ㅅ','ㅆ',0.2],
+  // Coda neutralization: ㄱ/ㄷ/ㅂ all become ㄱ-coda sound (cost 0.3)
+  ['ㄱ','ㄷ',0.3], ['ㄱ','ㅂ',0.3], ['ㄷ','ㅂ',0.3],
+  // Nasal/liquid — very common Korean STT error (cost 0.3)
+  ['ㄴ','ㄹ',0.3], ['ㄴ','ㅁ',0.4], ['ㄹ','ㅁ',0.4],
+  // Vowel confusion (cost 0.25)
+  ['ㅐ','ㅔ',0.25], ['ㅒ','ㅖ',0.25], ['ㅓ','ㅗ',0.35],
+  ['ㅏ','ㅑ',0.4], ['ㅜ','ㅡ',0.35], ['ㅣ','ㅢ',0.4],
+  // Laryngeal (cost 0.4)
+  ['ㅇ','ㅎ',0.4]
+];
+
+// Build phonetic cost map once at module level
+function getPhoneticCostMap() {
+  if (_phoneticCostMap) return _phoneticCostMap;
+  _phoneticCostMap = new Map();
+  // Load from name-rules.json phonetic_pairs as baseline (cost 0.3)
+  for (const [a, b] of (getNameRules().phonetic_pairs || [])) {
+    _phoneticCostMap.set(`${a}|${b}`, 0.3);
+    _phoneticCostMap.set(`${b}|${a}`, 0.3);
+  }
+  // SR Directive 1: override with articulation-based costs
+  for (const [a, b, cost] of ARTICULATION_COST_PAIRS) {
+    _phoneticCostMap.set(`${a}|${b}`, cost);
+    _phoneticCostMap.set(`${b}|${a}`, cost);
+  }
+  return _phoneticCostMap;
+}
+
+// SR Directive 2: Length-proportional threshold (replaces hardcoded 2)
+// 2-char names: threshold 1 (strict — too many false positives otherwise)
+// 3-char names: threshold 2 (standard)
+// 4+ char names: threshold 2 (names rarely exceed 4 chars in Korean)
+function dynamicThreshold(nameLength) {
+  if (nameLength <= 2) return 1;
+  if (nameLength === 3) return 2;
+  return 2;
+}
+
 function levenshtein(a, b) {
   const m = a.length, n = b.length;
   const dp = Array.from({ length: m + 1 }, (_, i) => [i]);
@@ -142,29 +204,146 @@ function toJamo(str) {
   try { return _Hangul.disassemble(str).join(''); } catch (e) { return str; }
 }
 
+// Sub 1-6: Weighted jamo Levenshtein — phonetically similar jamo pairs cost 0.3 instead of 1
 function jamoLevenshtein(a, b) {
-  return levenshtein(toJamo(a), toJamo(b));
+  const jamoA = toJamo(a);
+  const jamoB = toJamo(b);
+  const costMap = getPhoneticCostMap();
+
+  const m = jamoA.length, n = jamoB.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (jamoA[i - 1] === jamoB[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1];
+      } else {
+        const substituteCost = costMap.get(`${jamoA[i-1]}|${jamoB[j-1]}`) ?? 1;
+        dp[i][j] = Math.min(
+          dp[i - 1][j] + 1,
+          dp[i][j - 1] + 1,
+          dp[i - 1][j - 1] + substituteCost
+        );
+      }
+    }
+  }
+  return dp[m][n];
+}
+
+// Sub 1-7: Surname validation — check if first char is a known Korean surname
+function isKoreanSurname(char) {
+  return getNameRules().surnames.includes(char);
+}
+
+// Sub 1-7: If NER extracted a person name whose first syllable is NOT a valid surname,
+// attempt fuzzy correction against entity_map persons
+function correctPersonBySurname(name) {
+  if (!name || name.length < 2) return name;
+  const firstChar = name[0];
+  if (isKoreanSurname(firstChar)) return name; // surname valid, no correction needed
+
+  // Try fuzzy match against known persons — if close match found, return it
+  const personMap = _entityMap.persons || {};
+  const matched = findFuzzyKey(personMap, name, 2);
+  if (matched) {
+    console.log(`[EntityIndexer] Surname correction: "${name}" → "${matched}"`);
+    return matched;
+  }
+  return name; // no better candidate found
 }
 
 // Find existing key within Jamo Levenshtein distance ≤ threshold; returns key or null
-function findFuzzyKey(map, candidate, threshold = 2) {
+// SR Directive 2: apply length-proportional threshold; userVerified entries get +1 relaxation
+function findFuzzyKey(map, candidate, threshold = null) {
+  // SR Directive 2: use dynamic threshold if none provided
+  const baseThreshold = threshold !== null ? threshold : dynamicThreshold(candidate.length);
+  // Pass 1: userVerified entries with relaxed threshold (+1)
   for (const existing of Object.keys(map)) {
-    if (jamoLevenshtein(candidate, existing) <= threshold) return existing;
+    if (map[existing].userVerified && jamoLevenshtein(candidate, existing) <= baseThreshold + 1) return existing;
+  }
+  // Pass 2: all entries with base threshold
+  for (const existing of Object.keys(map)) {
+    if (jamoLevenshtein(candidate, existing) <= baseThreshold) return existing;
   }
   return null;
+}
+
+// Apply aliases substitution to a name using entity_map aliases across all types
+function applyAliases(name) {
+  for (const type of ['persons', 'projects', 'places']) {
+    const typeMap = _entityMap[type] || {};
+    for (const [canonical, entry] of Object.entries(typeMap)) {
+      const aliases = entry.aliases || {};
+      if (aliases[name]) return canonical;
+    }
+  }
+  return name;
+}
+
+// ============================================================
+// Sub 1-8: Place name correction via Gemini Flash
+// ============================================================
+async function correctPlaceWithGemini(placeName) {
+  if (!_geminiApiKey || _geminiApiKey === 'your_key_here') return placeName;
+  const url = `${_geminiBaseUrl}/models/gemini-2.5-flash:generateContent?key=${_geminiApiKey}`;
+  const prompt = `다음 장소명이 실존 지명인지 판단하고, 음성인식 오류로 잘못된 경우 올바른 지명을 반환하라.
+장소명: "${placeName}"
+JSON 형식으로만 응답하라: {"is_valid": true/false, "corrected": "올바른 지명 또는 원본"}`;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: 'application/json', temperature: 0.1 }
+      })
+    });
+    if (!res.ok) {
+      console.warn(`[EntityIndexer] Place correction HTTP ${res.status} for "${placeName}"`);
+      if (res.status === 429) await new Promise(r => setTimeout(r, 2000));
+      return placeName;
+    }
+    const data = await res.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (parseErr) {
+      console.warn(`[EntityIndexer] Place correction JSON parse failed for "${placeName}":`, parseErr.message);
+      return placeName;
+    }
+    if (parsed?.is_valid === true) return placeName;
+    if (parsed?.is_valid === false) {
+      const corrected = (parsed?.corrected || '').trim() || placeName;
+      if (corrected !== placeName) {
+        console.log(`[EntityIndexer] Place correction: "${placeName}" → "${corrected}"`);
+      }
+      return corrected;
+    }
+    return placeName; // unexpected shape (missing is_valid field)
+  } catch (e) {
+    console.warn(`[EntityIndexer] Place Gemini correction failed for "${placeName}":`, e.message);
+    return placeName;
+  }
 }
 
 // ============================================================
 // Entity Map Merge
 // ============================================================
+const SPEAKER_PATTERN = /^(화자|Speaker)\s*\d+$/i;
+
 function mergeNerResult(nerResult, sourceFile) {
   const { entities } = nerResult;
   const changed = { persons: [], projects: [], places: [] };
 
   for (const type of ['persons', 'projects', 'places']) {
     for (const name of (entities[type] || [])) {
-      const key = (name || '').trim();
-      if (!key) continue;
+      const rawKey = (name || '').trim();
+      if (!rawKey) continue;
+      if (type === 'persons' && SPEAKER_PATTERN.test(rawKey)) continue;
+      // Sub 1-7: surname validation + fuzzy correction for persons
+      const correctedKey = type === 'persons' ? correctPersonBySurname(rawKey) : rawKey;
+      const key = applyAliases(correctedKey);
       if (!_entityMap[type]) _entityMap[type] = {};
       // Fuzzy dedup: only apply to persons (typos/nicknames common there)
       const fuzzyThreshold = type === 'persons' ? 2 : 0;
@@ -380,7 +559,32 @@ async function indexNote(filePath, rawContent) {
 
   try {
     const nerResult = await callGeminiNer(body);
+    // Sub 1-8: correct new place names via Gemini fallback (skip if already in entity_map)
+    const rawPlaces = nerResult.entities.places || [];
+    const correctedPlaces = [];
+    const placeAliasMap = {}; // { corrected: originalName } for alias accumulation after merge
+    for (const place of rawPlaces) {
+      const trimmed = (place || '').trim();
+      if (!trimmed) continue;
+      const existingKey = findFuzzyKey(_entityMap.places || {}, trimmed, 2);
+      if (existingKey) {
+        correctedPlaces.push(trimmed); // already known — no Gemini call
+      } else {
+        const corrected = await correctPlaceWithGemini(trimmed);
+        correctedPlaces.push(corrected);
+        if (corrected !== trimmed) placeAliasMap[corrected] = trimmed;
+      }
+    }
+    nerResult.entities.places = correctedPlaces;
+
     const changed = mergeNerResult(nerResult, path.basename(filePath));
+    // Sub 1-8 CRITICAL FIX: accumulate aliases AFTER mergeNerResult has created canonical entries
+    for (const [corrected, original] of Object.entries(placeAliasMap)) {
+      if (_entityMap.places && _entityMap.places[corrected]) {
+        _entityMap.places[corrected].aliases = _entityMap.places[corrected].aliases || {};
+        _entityMap.places[corrected].aliases[original] = true;
+      }
+    }
     saveEntityMapToDisk();
     // Sub 1-5: entity notes → cross links → WikiLinks
     createEntityNotes(nerResult);
@@ -408,4 +612,13 @@ async function resyncEntityMap() {
   };
 }
 
-module.exports = { initEntityIndexer, getEntityMap, indexNote, resyncEntityMap };
+module.exports = { initEntityIndexer, getEntityMap, indexNote, resyncEntityMap, saveEntityMapToDisk };
+
+// Test-only exports — internal functions for unit testing
+module.exports._test = {
+  jamoLevenshtein, dynamicThreshold, isKoreanSurname, correctPersonBySurname,
+  findFuzzyKey, applyAliases, mergeNerResult, getPhoneticCostMap,
+  SPEAKER_PATTERN, ARTICULATION_COST_PAIRS,
+  get entityMap() { return _entityMap; },
+  set entityMap(v) { _entityMap = v; },
+};
