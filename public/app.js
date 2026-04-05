@@ -572,6 +572,9 @@ function loadFeed() {
 
   el.innerHTML = '<div class="empty">로딩 중...</div>';
 
+  // Fire both requests in parallel
+  var todosPromise = api('/daily/' + fmt(feedDate) + '/todos');
+
   api('/feed/' + fmt(feedDate))
     .then(function (r) { return r.json(); })
     .then(function (d) {
@@ -643,7 +646,7 @@ function loadFeed() {
     })
     .catch(function (e) { el.innerHTML = '<div class="empty">오류: ' + e.message + '</div>'; });
 
-  loadTodosForFeed();
+  loadTodosForFeed(todosPromise);
 }
 
 function renderFeedCards(notes) {
@@ -733,12 +736,12 @@ function renderCardActions(filename) {
     '</div>';
 }
 
-function loadTodosForFeed() {
+function loadTodosForFeed(prefetchedPromise) {
   var todoSection = document.getElementById('todo-list-section');
   var todoList = document.getElementById('todo-list');
   if (!todoSection || !todoList) return;
 
-  api('/daily/' + fmt(feedDate) + '/todos')
+  (prefetchedPromise || api('/daily/' + fmt(feedDate) + '/todos'))
     .then(function (r) {
       if (!r.ok) { todoSection.style.display = 'none'; return; }
       return r.json();
@@ -1261,7 +1264,7 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 });
 
-function doSearch() {
+function doSearch(signal) {
   var q = (document.getElementById('searchInput').value || '').trim();
   var resultsEl = document.getElementById('searchResults');
   var histList = document.getElementById('hist-list');
@@ -1282,7 +1285,7 @@ function doSearch() {
   var params = new URLSearchParams({ q: q, scope: scope });
   if (filterType) params.append('filterType', filterType);
   if (filterDate) params.append('filterDate', filterDate);
-  api('/search?' + params.toString())
+  api('/search?' + params.toString(), signal ? { signal: signal } : undefined)
     .then(function (r) { return r.json(); })
     .then(function (d) {
       if (!d.results || !d.results.length) {
@@ -1333,6 +1336,7 @@ function doSearch() {
       });
     })
     .catch(function (e) {
+      if (e.name === 'AbortError') return;
       resultsEl.innerHTML = '<div class="empty" style="padding:20px">검색 실패: ' + esc(e.message) + '</div>';
     });
 }
@@ -1442,8 +1446,11 @@ function loadSettings() {
 
 var _calWasConnected = false;
 var _calConnected = false;
+var _calCheckPending = false;
 
 function checkCalendarStatus(silent) {
+  if (_calCheckPending) return;
+  _calCheckPending = true;
   api('/calendar/status')
     .then(function (r) { return r.json(); })
     .then(function (d) {
@@ -1485,7 +1492,8 @@ function checkCalendarStatus(silent) {
         _calConnected = false;
       }
     })
-    .catch(function () {});
+    .catch(function () {})
+    .finally(function () { _calCheckPending = false; });
 }
 
 // Auto-check calendar every 10 minutes
@@ -2305,9 +2313,16 @@ document.addEventListener('DOMContentLoaded', function () {
   var searchInput = document.getElementById('searchInput');
   searchInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
   var searchTimer = null;
+  var searchAbortController = null;
   searchInput.addEventListener('input', function () {
     if (searchTimer) clearTimeout(searchTimer);
-    searchTimer = setTimeout(function () { if (searchInput.value.trim()) doSearch(); }, 1500);
+    if (searchAbortController) { searchAbortController.abort(); searchAbortController = null; }
+    searchTimer = setTimeout(function () {
+      if (searchInput.value.trim()) {
+        searchAbortController = new AbortController();
+        doSearch(searchAbortController.signal);
+      }
+    }, 500);
   });
   document.getElementById('hist-close').addEventListener('click', closePreview);
 

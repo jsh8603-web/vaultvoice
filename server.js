@@ -27,6 +27,9 @@ const PQueue = require('p-queue').default;
 // Entity Indexer — F5 module
 const { initEntityIndexer, getEntityMap, indexNote, resyncEntityMap } = require('./entityIndexer');
 
+// NoteCache — in-memory TTL cache for date notes, tag counts, file lists
+const noteCache = require('./noteCache');
+
 // Web Push + Scheduler (F7)
 let webpush, schedule;
 try { webpush  = require('web-push');     } catch (e) { console.warn('[Push] web-push not installed:', e.message); }
@@ -165,9 +168,16 @@ function getGeminiApiUrl(tier = 'flash') {
 // Title Cache for wiki-link insertion
 // ============================================================
 let titleCache = {}; // { filename: title }
+const _compiledRegexMap = new Map(); // filename -> RegExp
+
+function _buildRegex(title) {
+  const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<!\\[\\[)${escaped}(?!\\]\\])`, 'g');
+}
 
 function loadTitleCache() {
   titleCache = {};
+  _compiledRegexMap.clear();
   if (!fs.existsSync(NOTES_DIR)) return;
   try {
     const files = fs.readdirSync(NOTES_DIR).filter(f => f.endsWith('.md'));
@@ -175,21 +185,23 @@ function loadTitleCache() {
       try {
         const raw = fs.readFileSync(path.join(NOTES_DIR, f), 'utf-8');
         const { frontmatter } = parseFrontmatter(raw);
-        if (frontmatter.title) titleCache[f] = frontmatter.title;
+        if (frontmatter.title) {
+          titleCache[f] = frontmatter.title;
+          _compiledRegexMap.set(f, _buildRegex(frontmatter.title));
+        }
       } catch (e) { /* skip */ }
     }
   } catch (e) { console.warn('[TitleCache] Load failed:', e.message); }
 }
 
 function insertWikiLinks(body, currentFilename) {
+  if (!Object.keys(titleCache).length) loadTitleCache();
   if (!Object.keys(titleCache).length) return body;
   let result = body;
   for (const [filename, title] of Object.entries(titleCache)) {
     if (filename === currentFilename) continue;
     if (!title || title.length < 2) continue;
-    // Replace bare title text (not already inside [[...]]) with wikilink
-    const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(`(?<!\\[\\[)${escaped}(?!\\]\\])`, 'g');
+    const regex = _compiledRegexMap.get(filename) || _buildRegex(title);
     result = result.replace(regex, `[[${filename.replace(/\.md$/, '')}|${title}]]`);
   }
   return result;
@@ -223,9 +235,9 @@ app.use(express.static(path.join(__dirname, 'public'), {
   }
 }));
 
-// Request logger (debug)
+// Request logger (debug only)
 app.use((req, res, next) => {
-  if (req.path.startsWith('/api')) {
+  if (process.env.DEBUG === 'true' && req.path.startsWith('/api')) {
     console.log(`[REQ] ${req.method} ${req.path} from ${req.ip}`);
   }
   next();
@@ -1145,6 +1157,8 @@ function executeDeleteNote(args) {
     invalidateFileCache();
     _vectorCache = null;
     delete titleCache[args.filename];
+    _compiledRegexMap.delete(args.filename);
+    noteCache.invalidate(args.filename);
     return { result: `"${args.filename}" 노트를 삭제했습니다.` };
   } catch (e) {
     return { result: '삭제 실패: ' + e.message };
@@ -1165,6 +1179,7 @@ function executeDeleteTodoTool(args) {
   if (lineIndex < 0 || lineIndex >= lines.length || !lines[lineIndex].match(/^- \[([ x])\] /)) return { result: 'Invalid todo line' };
   lines.splice(lineIndex, 1);
   fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+  noteCache.invalidate(todoNote.filename);
   return { result: `할일 항목(${lineIndex})을 삭제했습니다.` };
 }
 
@@ -1186,6 +1201,7 @@ function executeToggleTodoTool(args) {
   else if (line.match(/^- \[x\] /)) lines[lineIndex] = line.replace('- [x] ', '- [ ] ');
   else return { result: 'Line is not a todo item' };
   fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+  noteCache.invalidate(todoNote.filename);
   return { result: `할일 항목(${lineIndex}) 토글 완료.` };
 }
 
@@ -1268,21 +1284,22 @@ async function getActivitySummary(days = 30) {
 
   const noteMetas = [];
   try {
+    // Group by date and leverage noteCache to avoid redundant readFileSync
     const files = fs.readdirSync(NOTES_DIR).filter(f => f.endsWith('.md') && f >= since);
-    for (const f of files) {
-      const dateInName = (f.match(/^(\d{4}-\d{2}-\d{2})/) || [])[1] || '';
-      if (dateInName < since) continue;
-      try {
-        const raw = fs.readFileSync(path.join(NOTES_DIR, f), 'utf-8');
-        const { frontmatter: fm } = parseFrontmatter(raw);
+    const dateSet = new Set(files.map(f => (f.match(/^(\d{4}-\d{2}-\d{2})/) || [])[1]).filter(Boolean));
+    for (const date of dateSet) {
+      const notes = getNotesForDate(date);
+      for (const note of notes) {
+        if (note.filename < since) continue;
+        const fm = note.frontmatter;
         noteMetas.push({
-          date: dateInName,
+          date,
           category: fm.category || fm.area || '',
           topic: Array.isArray(fm.topic) ? fm.topic : [],
           type: fm.type || fm['유형'] || '',
-          title: fm.title || f
+          title: fm.title || note.filename
         });
-      } catch (_) {}
+      }
     }
   } catch (_) {}
 
@@ -1342,18 +1359,23 @@ async function summarizeTopic(topic) {
   // Keyword: strip time expressions to get core topic
   const keyword = topic.replace(/이번\s*달|지난\s*달|올해|\d{4}[-년]\s*\d{1,2}[월-]?/g, '').trim();
 
-  // Find relevant notes: keyword match + time filter
+  // Find relevant notes: keyword match + time filter using noteCache
   const snippets = [];
   try {
     const files = fs.readdirSync(NOTES_DIR).filter(f => f.endsWith('.md')).sort().reverse();
-    for (const f of files) {
+    const dateSet = new Set(files.map(f => (f.match(/^(\d{4}-\d{2}-\d{2})/) || [])[1]).filter(Boolean));
+    const sortedDates = [...dateSet].sort().reverse();
+    for (const date of sortedDates) {
       if (snippets.length >= 10) break;
-      if (filterYear && !f.startsWith(filterYear)) continue;
-      if (filterMonth && !f.startsWith(`${filterYear}-${filterMonth}`)) continue;
-      const raw = fs.readFileSync(path.join(NOTES_DIR, f), 'utf-8');
-      if (keyword && !raw.toLowerCase().includes(keyword.toLowerCase())) continue;
-      const { frontmatter: fm, body } = parseFrontmatter(raw);
-      snippets.push(`[${fm['날짜'] || f.slice(0, 10)}] ${body.slice(0, 400)}`);
+      if (filterYear && !date.startsWith(filterYear)) continue;
+      if (filterMonth && !date.startsWith(`${filterYear}-${filterMonth}`)) continue;
+      const notes = getNotesForDate(date);
+      for (const note of notes) {
+        if (snippets.length >= 10) break;
+        if (keyword && !note.raw.toLowerCase().includes(keyword.toLowerCase())) continue;
+        const fm = note.frontmatter;
+        snippets.push(`[${fm['날짜'] || date}] ${note.body.slice(0, 400)}`);
+      }
     }
   } catch (_) {}
 
@@ -1511,20 +1533,39 @@ async function getPersonContext(name) {
     }
   } catch (_) {}
 
-  // 2. Interaction memos: attendees or participants wikilink match (Top-10, newest first)
+  // 2. Interaction memos: use entity_map sources for direct file lookups (avoid full scan)
   const interactions = [];
   try {
-    const files = fs.readdirSync(NOTES_DIR).sort().reverse();
-    for (const f of files) {
-      if (!f.endsWith('.md') || interactions.length >= 10) continue;
-      const raw = fs.readFileSync(path.join(NOTES_DIR, f), 'utf-8');
-      const { frontmatter: fm, body } = parseFrontmatter(raw);
-      const combined = [
-        ...(Array.isArray(fm.attendees) ? fm.attendees : []),
-        ...(Array.isArray(fm.participants) ? fm.participants : [])
-      ].join(' ');
-      if (combined.includes(cleanName) || combined.includes(name.trim())) {
-        interactions.push({ file: f, date: fm['날짜'] || fm.date || f.slice(0, 10), snippet: body.slice(0, 300) });
+    const entityMap = getEntityMap();
+    const personEntry = entityMap?.persons?.[cleanName]
+      || Object.entries(entityMap?.persons || {}).find(([k]) => levenshtein(cleanName, normalizeAttendeeName(k)) <= 1)?.[1]
+      || null;
+    const sourceFiles = personEntry?.sources
+      ? [...personEntry.sources].sort().reverse().slice(0, 10)
+      : [];
+    if (sourceFiles.length > 0) {
+      for (const f of sourceFiles) {
+        if (!f.endsWith('.md')) continue;
+        try {
+          const raw = fs.readFileSync(path.join(NOTES_DIR, f), 'utf-8');
+          const { frontmatter: fm, body } = parseFrontmatter(raw);
+          interactions.push({ file: f, date: fm['날짜'] || fm.date || f.slice(0, 10), snippet: body.slice(0, 300) });
+        } catch (_) {}
+      }
+    } else {
+      // Fallback: full scan if entity_map has no sources
+      const files = fs.readdirSync(NOTES_DIR).sort().reverse();
+      for (const f of files) {
+        if (!f.endsWith('.md') || interactions.length >= 10) continue;
+        const raw = fs.readFileSync(path.join(NOTES_DIR, f), 'utf-8');
+        const { frontmatter: fm, body } = parseFrontmatter(raw);
+        const combined = [
+          ...(Array.isArray(fm.attendees) ? fm.attendees : []),
+          ...(Array.isArray(fm.participants) ? fm.participants : [])
+        ].join(' ');
+        if (combined.includes(cleanName) || combined.includes(name.trim())) {
+          interactions.push({ file: f, date: fm['날짜'] || fm.date || f.slice(0, 10), snippet: body.slice(0, 300) });
+        }
       }
     }
   } catch (_) {}
@@ -1554,10 +1595,20 @@ async function getPersonContext(name) {
   return { name, summary, recentInteractions: interactions.map(i => ({ date: i.date, file: i.file })), entityNote: !!entityContent };
 }
 
-// Expand query keywords using Gemini Pro for synonym/related term matching
+// LRU cache for expandKeywords (max 50, TTL 10min)
+const _kwCache = new Map(); // query -> { result, ts }
+const KW_CACHE_TTL = 600000; // 10min
+const KW_CACHE_MAX = 50;
+
+// Expand query keywords using Gemini Flash for synonym/related term matching
 async function expandKeywords(query) {
+  const cached = _kwCache.get(query);
+  if (cached && Date.now() - cached.ts < KW_CACHE_TTL) {
+    console.log(`[Search] Keyword expansion cache hit: "${query}"`);
+    return cached.result;
+  }
   try {
-    const res = await fetch(getGeminiApiUrl('pro'), {
+    const res = await fetch(getGeminiApiUrl('flash'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1570,6 +1621,11 @@ async function expandKeywords(query) {
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     const expanded = text.split(/[,，\n]+/).map(s => s.trim().toLowerCase()).filter(s => s.length >= 2 && s.length <= 20);
     console.log(`[Search] Keyword expansion: "${query}" → [${expanded.join(', ')}]`);
+    if (_kwCache.size >= KW_CACHE_MAX) {
+      const firstKey = _kwCache.keys().next().value;
+      _kwCache.delete(firstKey);
+    }
+    _kwCache.set(query, { result: expanded, ts: Date.now() });
     return expanded;
   } catch (e) {
     console.error('[Search] Keyword expansion failed:', e.message);
@@ -1578,6 +1634,23 @@ async function expandKeywords(query) {
 }
 
 // 3-tier search: 1) VaultVoice 2) Other user folders 3) System config (keyword-gated)
+// LRU content cache for executeSearch (max 200 entries, TTL 60s)
+const _contentCache = new Map(); // filePath -> { content: string, ts: number }
+const _CONTENT_CACHE_MAX = 200;
+const _CONTENT_CACHE_TTL = 60000;
+
+function _readFileWithCache(filePath) {
+  const entry = _contentCache.get(filePath);
+  if (entry && Date.now() - entry.ts < _CONTENT_CACHE_TTL) return entry.content;
+  const content = fs.readFileSync(filePath, 'utf-8');
+  if (_contentCache.size >= _CONTENT_CACHE_MAX) {
+    const oldest = _contentCache.keys().next().value;
+    _contentCache.delete(oldest);
+  }
+  _contentCache.set(filePath, { content, ts: Date.now() });
+  return content;
+}
+
 async function executeSearch(query) {
   if (!query) return { result: 'No query provided.' };
 
@@ -1592,7 +1665,7 @@ async function executeSearch(query) {
 
   function scoreFile(filePath) {
     try {
-      const content = fs.readFileSync(filePath, 'utf-8').toLowerCase();
+      const content = _readFileWithCache(filePath).toLowerCase();
       let score = 0;
 
       // Exact full query match (highest weight)
@@ -1854,16 +1927,25 @@ app.post('/api/ai/chat', async (req, res) => {
 
   const todayStr = new Date().toISOString().slice(0, 10);
 
-  // Pre-search: always run search before Gemini to guarantee results are available
+  // Pre-search: skip for short greetings/acknowledgements only
+  const SKIP_PRESEARCH = /^(안녕|하이|반가워|고마워|감사|넵|응|좋아|알겠어|오키|ㅎㅎ|ㅇㅋ|ㅇㅇ|ㄱㄱ)[\s!?.]*$/i;
+  const HAS_QUESTION_WORD = /[뭐어떻왜언어디누구몇]/;
+  const trimmedMsg = message.trim();
+  const skipPresearch = trimmedMsg.length < 10 && SKIP_PRESEARCH.test(trimmedMsg) && !HAS_QUESTION_WORD.test(trimmedMsg);
+
   let preSearchContext = '';
-  try {
-    const preSearchResult = await executeSearch(message.trim());
-    if (preSearchResult.result && preSearchResult.result !== '검색 결과가 없습니다.') {
-      preSearchContext = `\n\n[Pre-search results for user message]\n${preSearchResult.result}`;
-      console.log('[Jarvis] Pre-search found results for:', message.trim());
+  if (!skipPresearch) {
+    try {
+      const preSearchResult = await executeSearch(trimmedMsg);
+      if (preSearchResult.result && preSearchResult.result !== '검색 결과가 없습니다.') {
+        preSearchContext = `\n\n[Pre-search results for user message]\n${preSearchResult.result}`;
+        console.log('[Jarvis] Pre-search found results for:', trimmedMsg);
+      }
+    } catch (e) {
+      console.error('[Jarvis] Pre-search failed:', e.message);
     }
-  } catch (e) {
-    console.error('[Jarvis] Pre-search failed:', e.message);
+  } else {
+    console.log('[Jarvis] Pre-search skipped (greeting/ack):', trimmedMsg);
   }
 
   const systemPrompt = `You are Jarvis, a concise personal assistant for VaultVoice (Obsidian vault).
@@ -2644,34 +2726,40 @@ app.get('/api/search/ai', async (req, res) => {
         .filter(f => f.endsWith('.md'))
         .map(f => path.join(NOTES_DIR, f));
     }
-    const results = [];
     const MAX_RESULTS = 50;
+    const BATCH_SIZE = 20;
 
-    for (const filePath of allFiles) {
-      if (results.length >= MAX_RESULTS) break;
-      let raw;
-      try { raw = fs.readFileSync(filePath, 'utf-8'); } catch (e) { continue; }
-      const lower = raw.toLowerCase();
-
-      // Check if any keyword matches
-      const matchedKeywords = keywords.filter(k => lower.indexOf(k.toLowerCase()) >= 0);
-      if (matchedKeywords.length === 0) continue;
-
-      const lines = raw.split('\n');
-      const matches = [];
-      for (let i = 0; i < lines.length; i++) {
-        const lineLower = lines[i].toLowerCase();
-        const lineMatches = matchedKeywords.filter(k => lineLower.indexOf(k.toLowerCase()) >= 0);
-        if (lineMatches.length > 0) {
-          matches.push({ line: i, text: lines[i].trim(), keywords: lineMatches });
-          if (matches.length >= 5) break;
+    async function processFileBatch(batch) {
+      return Promise.allSettled(batch.map(async filePath => {
+        let raw;
+        try { raw = await fs.promises.readFile(filePath, 'utf-8'); } catch (e) { return null; }
+        const lower = raw.toLowerCase();
+        const matchedKeywords = keywords.filter(k => lower.indexOf(k.toLowerCase()) >= 0);
+        if (matchedKeywords.length === 0) return null;
+        const lines = raw.split('\n');
+        const matches = [];
+        for (let i = 0; i < lines.length; i++) {
+          const lineLower = lines[i].toLowerCase();
+          const lineMatches = matchedKeywords.filter(k => lineLower.indexOf(k.toLowerCase()) >= 0);
+          if (lineMatches.length > 0) {
+            matches.push({ line: i, text: lines[i].trim(), keywords: lineMatches });
+            if (matches.length >= 5) break;
+          }
         }
-      }
-
-      if (matches.length > 0) {
+        if (matches.length === 0) return null;
         const relPath = path.relative(VAULT_PATH, filePath).replace(/\\/g, '/');
         const name = path.basename(filePath, '.md');
-        results.push({ date: name, path: relPath, matches, relevance: matchedKeywords.length });
+        return { date: name, path: relPath, matches, relevance: matchedKeywords.length };
+      }));
+    }
+
+    const results = [];
+    for (let i = 0; i < allFiles.length && results.length < MAX_RESULTS; i += BATCH_SIZE) {
+      const batch = allFiles.slice(i, i + BATCH_SIZE);
+      const settled = await processFileBatch(batch);
+      for (const r of settled) {
+        if (r.status === 'fulfilled' && r.value) results.push(r.value);
+        if (results.length >= MAX_RESULTS) break;
       }
     }
 
@@ -2689,12 +2777,14 @@ app.get('/api/search/ai', async (req, res) => {
 // Get tag list (frequency sorted)
 // ============================================================
 app.get('/api/tags', (req, res) => {
-  const tagCount = {};
+  const hit = noteCache.getTagCount();
+  if (hit) return res.json({ tags: Object.entries(hit).sort((a, b) => b[1] - a[1]).map(([tag, count]) => ({ tag, count })) });
 
   if (!fs.existsSync(NOTES_DIR)) {
     return res.json({ tags: [] });
   }
 
+  const tagCount = {};
   const files = fs.readdirSync(NOTES_DIR).filter(f => f.endsWith('.md')).sort().reverse().slice(0, 100);
 
   for (const file of files) {
@@ -2707,6 +2797,7 @@ app.get('/api/tags', (req, res) => {
     }
   }
 
+  noteCache.setTagCount(tagCount);
   const tags = Object.entries(tagCount)
     .sort((a, b) => b[1] - a[1])
     .map(([tag, count]) => ({ tag, count }));
@@ -2722,13 +2813,13 @@ app.get('/api/notes/recent', (req, res) => {
     return res.json({ notes: [] });
   }
 
-  const files = fs.readdirSync(NOTES_DIR).filter(f => f.endsWith('.md'));
-  // Extract unique dates and sort descending
+  // Single scan: group filenames by date prefix
   const dateMap = {};
-  for (const f of files) {
-    const dateMatch = f.match(/^(\d{4}-\d{2}-\d{2})_/);
-    if (dateMatch) {
-      const date = dateMatch[1];
+  for (const f of fs.readdirSync(NOTES_DIR)) {
+    if (!f.endsWith('.md')) continue;
+    const m = f.match(/^(\d{4}-\d{2}-\d{2})_/);
+    if (m) {
+      const date = m[1];
       if (!dateMap[date]) dateMap[date] = [];
       dateMap[date].push(f);
     }
@@ -2738,6 +2829,18 @@ app.get('/api/notes/recent', (req, res) => {
     .sort((a, b) => b[0].localeCompare(a[0]))
     .slice(0, 7)
     .map(([date, dateFiles]) => {
+      // Use cached notes for this date if available
+      const cached = noteCache.getNotesForDate(date);
+      if (cached) {
+        const allTags = new Set();
+        const previews = [];
+        for (const note of cached) {
+          (note.frontmatter.tags || []).forEach(t => allTags.add(t));
+          const lines = note.body.split('\n').filter(l => l.trim());
+          if (lines.length > 0) previews.push(lines[0]);
+        }
+        return { date, tags: [...allTags], preview: previews.join(' ').slice(0, 120), noteCount: cached.length };
+      }
       const allTags = new Set();
       const previews = [];
       for (const file of dateFiles.sort()) {
@@ -2747,8 +2850,7 @@ app.get('/api/notes/recent', (req, res) => {
         const lines = body.split('\n').filter(l => l.trim());
         if (lines.length > 0) previews.push(lines[0]);
       }
-      const preview = previews.join(' ').slice(0, 120);
-      return { date, tags: [...allTags], preview, noteCount: dateFiles.length };
+      return { date, tags: [...allTags], preview: previews.join(' ').slice(0, 120), noteCount: dateFiles.length };
     });
 
   res.json({ notes });
@@ -2870,19 +2972,20 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
   const content = serializeFrontmatter(fm) + body;
   fs.writeFileSync(filePath, content, 'utf-8');
   invalidateFileCache();
+  noteCache.invalidate(filename);
 
   // Async AI pipeline — each stage independent, no cascade failures
   if (GEMINI_API_KEY && GEMINI_API_KEY !== 'your_key_here') {
     let nerResultForContext = null; // Sub 2-3: closure — nerStage → contextStage 공유
     runPipeline(filePath, [
       async function generateMeta(fp) {
-        const raw = fs.readFileSync(fp, 'utf-8');
-        const { frontmatter: fm2 } = parseFrontmatter(raw);
+        // Use closure `content` (just written) — skip re-read
+        const { frontmatter: fm2 } = parseFrontmatter(content);
         if (fm2.title) return;
-        const meta = await generateNoteMeta(raw);
+        const meta = await generateNoteMeta(content);
         if (meta) {
           injectMetaToFrontmatter(fp, meta);
-          if (meta.title) titleCache[filename] = meta.title;
+          if (meta.title) { titleCache[filename] = meta.title; _compiledRegexMap.set(filename, _buildRegex(meta.title)); }
           console.log(`[Meta] Generated for ${filename}: ${meta.title}`);
         }
       },
@@ -2944,6 +3047,7 @@ function createAtomicNote(date, type, entry, tags, extraFrontmatter = {}) {
         fm.updated = new Date().toISOString().slice(0, 10);
         fs.writeFileSync(fp, serializeFrontmatter(fm) + finalBody, 'utf-8');
         await updateVectorIndex(fp, finalBody);
+        noteCache.invalidate(path.basename(fp));
       }
     ]).catch(e => console.warn('[Pipeline] Unexpected error:', e.message));
 
@@ -3061,9 +3165,13 @@ async function updateVectorIndex(filePath, body) {
     const mtime = fs.statSync(filePath).mtime.getTime();
 
     await _vectorQueue.add(() => {
-      let vectors = [];
-      if (fs.existsSync(VECTOR_FILE)) {
-        try { vectors = JSON.parse(fs.readFileSync(VECTOR_FILE, 'utf-8')); } catch (e) {}
+      let vectors;
+      if (_vectorCache !== null) {
+        vectors = _vectorCache; // use in-memory cache — skip readFileSync
+      } else if (fs.existsSync(VECTOR_FILE)) {
+        try { vectors = JSON.parse(fs.readFileSync(VECTOR_FILE, 'utf-8')); } catch (e) { vectors = []; }
+      } else {
+        vectors = [];
       }
       const entry = { path: relPath, mtime, vec: embedding };
       const idx = vectors.findIndex(v => v.path === relPath);
@@ -3081,12 +3189,12 @@ async function updateVectorIndex(filePath, body) {
 }
 
 const PRIVACY_KEYWORDS = (process.env.PRIVACY_KEYWORDS || '').split(',').map(k => k.trim()).filter(Boolean);
+const PRIVACY_REGEXES = PRIVACY_KEYWORDS.map(kw => new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'));
 
 function applyPrivacyShield(text) {
-  if (!text || !PRIVACY_KEYWORDS.length) return text;
+  if (!text || !PRIVACY_REGEXES.length) return text;
   let masked = text;
-  for (const kw of PRIVACY_KEYWORDS) {
-    const regex = new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+  for (const regex of PRIVACY_REGEXES) {
     masked = masked.replace(regex, '***');
   }
   return masked;
@@ -3100,8 +3208,9 @@ async function checkConsistency(filePath, raw) {
   let context = '';
   try {
     const queryVec = await getEmbedding(body);
-    if (queryVec && fs.existsSync(VECTOR_FILE)) {
-      const vectorData = JSON.parse(fs.readFileSync(VECTOR_FILE, 'utf-8'));
+    const vectorData = _vectorCache !== null ? _vectorCache
+      : (fs.existsSync(VECTOR_FILE) ? JSON.parse(fs.readFileSync(VECTOR_FILE, 'utf-8')) : null);
+    if (queryVec && vectorData) {
       const related = vectorData
         .map(item => ({ path: item.path, score: cosineSimilarity(queryVec, item.vec) }))
         .filter(item => !filePath.includes(item.path)) // exclude current file
@@ -3184,6 +3293,7 @@ ${maskedContext}`;
 
 let _dateIndex = null;
 let _dateIndexMtime = 0;
+let _dateIndexBuilding = false; // stale-while-revalidate 중복 방지
 const DATE_INDEX_CACHE_TTL = 6 * 3600 * 1000; // 6h — BUG-5 패턴 동일
 
 function saveDateIndex(index) {
@@ -3229,7 +3339,22 @@ function loadDateIndex() {
     }
   } catch (_) {}
 
-  // Cache miss / stale → rebuild
+  // Cache miss / stale → stale-while-revalidate: return existing cache, rebuild async
+  if (_dateIndex && !_dateIndexBuilding) {
+    _dateIndexBuilding = true;
+    setImmediate(async () => {
+      try {
+        const fresh = buildDateIndexFromVault();
+        _dateIndex = fresh;
+        _dateIndexMtime = Date.now();
+        saveDateIndex(fresh);
+      } catch (e) { console.warn('[DateIndex] async rebuild failed:', e.message); }
+      finally { _dateIndexBuilding = false; }
+    });
+    return _dateIndex; // return stale cache immediately
+  }
+
+  // No cache at all → sync build (cold start only)
   _dateIndex = buildDateIndexFromVault();
   _dateIndexMtime = now;
   saveDateIndex(_dateIndex);
@@ -3628,6 +3753,9 @@ function findVVNote(filename) {
 }
 
 function getVVNotesForDate(date) {
+  const cached = noteCache.getNotesForDate(date);
+  if (cached) return cached;
+
   const prefix = `${date}_`;
   const results = new Map(); // filename → fullPath (dedup)
   // Tier 1: 99_vaultvoice/
@@ -3653,11 +3781,13 @@ function getVVNotesForDate(date) {
   } catch (e) { /* skip */ }
   // Sort by filename (= chronological) and read content
   const sorted = [...results.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  return sorted.map(([filename, fullPath]) => {
+  const notes = sorted.map(([filename, fullPath]) => {
     const raw = fs.readFileSync(fullPath, 'utf-8');
     const { frontmatter, body } = parseFrontmatter(raw);
     return { filename, fullPath, frontmatter, body: body.trim(), raw };
   });
+  noteCache.setNotesForDate(date, notes);
+  return notes;
 }
 
 // Read all atomic notes for a given date (delegates to unified finder)
@@ -3850,30 +3980,17 @@ app.get('/api/vm/backlinks', async (req, res) => {
   }
 });
 
-// VM: Recent files (filesystem mtime scan)
+// VM: Recent files (uses shared file cache)
 app.get('/api/vm/recent', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 20, 50);
-    const files = [];
-    const scan = (dir, prefix) => {
+    const allFiles = getAllMdFilesCached();
+    const files = allFiles.map(fp => {
       try {
-        const items = fs.readdirSync(dir);
-        for (const item of items) {
-          if (item.startsWith('.')) continue;
-          const full = path.join(dir, item);
-          const rel = prefix ? prefix + '/' + item : item;
-          try {
-            const stat = fs.statSync(full);
-            if (stat.isDirectory()) {
-              scan(full, rel);
-            } else if (item.endsWith('.md')) {
-              files.push({ path: rel, mtime: stat.mtimeMs, size: stat.size });
-            }
-          } catch (e) { /* skip */ }
-        }
-      } catch (e) { /* skip */ }
-    };
-    scan(VAULT_PATH, '');
+        const stat = fs.statSync(fp);
+        return { path: path.relative(VAULT_PATH, fp).replace(/\\/g, '/'), mtime: stat.mtimeMs, size: stat.size };
+      } catch (e) { return null; }
+    }).filter(Boolean);
     files.sort((a, b) => b.mtime - a.mtime);
     res.json(files.slice(0, limit));
   } catch (e) {
@@ -4897,6 +5014,8 @@ app.post('/api/note/delete', auth, (req, res) => {
     invalidateFileCache();
     _vectorCache = null;
     delete titleCache[filename];
+    _compiledRegexMap.delete(filename);
+    noteCache.invalidate(filename);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -5059,7 +5178,7 @@ app.post('/api/notes/backfill-titles', auth, async (req, res) => {
         const meta = await generateNoteMeta(raw);
         if (meta) {
           injectMetaToFrontmatter(path.join(NOTES_DIR, f), meta);
-          if (meta.title) titleCache[f] = meta.title;
+          if (meta.title) { titleCache[f] = meta.title; _compiledRegexMap.set(f, _buildRegex(meta.title)); }
           updated++;
         }
         await new Promise(r => setTimeout(r, 300)); // rate limit
@@ -5799,11 +5918,13 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`  File cache: ${cached.length} .md files indexed`);
   } catch (e) { console.log('  File cache: warm-up failed -', e.message); }
 
-  // Pre-load title cache for wiki-link insertion
-  try {
-    loadTitleCache();
-    console.log(`  Title cache: ${Object.keys(titleCache).length} titles loaded`);
-  } catch (e) { console.log('  Title cache: warm-up failed -', e.message); }
+  // Pre-load title cache for wiki-link insertion (async, non-blocking)
+  setImmediate(() => {
+    try {
+      loadTitleCache();
+      console.log(`  Title cache: ${Object.keys(titleCache).length} titles loaded`);
+    } catch (e) { console.log('  Title cache: warm-up failed -', e.message); }
+  });
 
   // Entity Indexer — F5 background scan (non-blocking)
   if (GEMINI_API_KEY && GEMINI_API_KEY !== 'your_key_here') {

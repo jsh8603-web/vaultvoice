@@ -306,8 +306,12 @@ async function backgroundScan() {
     const vvDir = path.join(_vaultPath, '99_vaultvoice');
     if (!fs.existsSync(vvDir)) { _entityMapReady = true; return; }
 
-    const files = fs.readdirSync(vvDir).filter(f => f.endsWith('.md'));
-    console.log(`[EntityIndexer] Background scan: ${files.length} notes`);
+    const lastUpdated = _entityMap.last_updated ? new Date(_entityMap.last_updated).getTime() : 0;
+    const allFiles = fs.readdirSync(vvDir).filter(f => f.endsWith('.md'));
+    const files = lastUpdated > 0
+      ? allFiles.filter(f => { try { return fs.statSync(path.join(vvDir, f)).mtimeMs > lastUpdated; } catch { return true; } })
+      : allFiles;
+    console.log(`[EntityIndexer] Background scan: ${files.length}/${allFiles.length} notes (incremental)`);
 
     for (const f of files) {
       try {

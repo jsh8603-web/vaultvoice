@@ -1,5 +1,5 @@
-// VaultVoice Service Worker v2
-const CACHE_NAME = 'vaultvoice-v3.0';
+// VaultVoice Service Worker v3
+const CACHE_NAME = 'vaultvoice-v3.1';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -79,19 +79,18 @@ self.addEventListener('fetch', function (e) {
     return;
   }
 
-  // Static assets: network-first with cache fallback
-  // Ensures updates are picked up quickly while still working offline
+  // Static assets: cache-first, background refresh
   e.respondWith(
-    fetch(e.request).then(function (response) {
-      if (response.ok && e.request.method === 'GET' && url.origin === self.location.origin) {
-        var clone = response.clone();
-        caches.open(CACHE_NAME).then(function (cache) {
-          cache.put(e.request, clone);
-        });
-      }
-      return response;
-    }).catch(function () {
-      return caches.match(e.request);
+    caches.match(e.request).then(function (cached) {
+      var fetchPromise = fetch(e.request).then(function (response) {
+        if (response.ok && e.request.method === 'GET' && url.origin === self.location.origin) {
+          caches.open(CACHE_NAME).then(function (cache) {
+            cache.put(e.request, response.clone());
+          });
+        }
+        return response;
+      });
+      return cached || fetchPromise;
     })
   );
 });
